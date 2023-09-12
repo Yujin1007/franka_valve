@@ -1,0 +1,850 @@
+// Copyright (c) 2017 Franka Emika GmbH
+// Use of this source code is governed by the Apache-2.0 license, see LICENSE
+#include <franka_valve/joint_space_impedance_controller.h>
+#include <franka_valve/trajectory.h>
+#include <cmath>
+#include <fstream>
+
+#include <controller_interface/controller_base.h>
+#include <franka/robot_state.h>
+#include <hardware_interface/hardware_interface.h>
+#include <pluginlib/class_list_macros.h>
+#include <ros/ros.h>
+#include <thread>
+
+#include <franka_gripper/GraspAction.h>
+#include <franka_gripper/HomingAction.h>
+#include <franka_gripper/MoveAction.h>
+#include <chrono>
+#include "gnuplot-iostream.h"
+
+namespace franka_valve {
+
+ 
+
+
+bool JointSpaceImpedanceController::init(hardware_interface::RobotHW* robot_hw,
+                                         ros::NodeHandle& node_handle) {
+  string arm_id;
+  if (!node_handle.getParam("arm_id", arm_id)) {
+    ROS_ERROR("JointSpaceImpedanceController: Could not read parameter arm_id");
+    return false;
+  }
+  vector<string> joint_names;
+  if (!node_handle.getParam("joint_names", joint_names) || joint_names.size() != 7) {
+    ROS_ERROR(
+        "JointSpaceImpedanceController: Invalid or no joint_names parameters provided, aborting "
+        "controller init!");
+    return false;
+  }
+
+  std::vector<double> k_gains_;
+  _k_gains(7);
+  if (!node_handle.getParam("k_gains", k_gains_) || k_gains_.size() != 7) {
+    ROS_ERROR(
+        "JointSpaceImpedanceController:  Invalid or no k_gain parameters provided, aborting "
+        "controller init!");
+    return false;
+  } else {
+    Eigen::Map<const Eigen::Matrix<double, 7, 1>> k_gains_map(k_gains_.data());
+    _k_gains = k_gains_map;
+  }
+
+  std::vector<double> d_gains_;
+  _d_gains(7);
+  if (!node_handle.getParam("d_gains", d_gains_) || d_gains_.size() != 7) {
+    ROS_ERROR(
+        "JointSpaceImpedanceController:  Invalid or no d_gain parameters provided, aborting "
+        "controller init!");
+    return false;
+  } else {
+    Eigen::Map<const Eigen::Matrix<double, 7, 1>> d_gains_map(d_gains_.data());
+    _d_gains = d_gains_map;
+  }
+
+  std::vector<double> xk_gains_;
+  _xk_gains(6);
+  if (!node_handle.getParam("xk_gains", xk_gains_) || xk_gains_.size() != 6) {
+    ROS_ERROR(
+        "JointSpaceImpedanceController:  Invalid or no xk_gain parameters provided, aborting "
+        "controller init!");
+    return false;
+  } else {
+    Eigen::Map<const Eigen::Matrix<double, 6, 1>> xk_gains_map(xk_gains_.data());
+    _xk_gains = xk_gains_map;
+  }
+
+  std::vector<double> xd_gains_;
+  _xd_gains(7);
+  if (!node_handle.getParam("xd_gains", xd_gains_) || xd_gains_.size() != 6) {
+    ROS_ERROR(
+        "JointSpaceImpedanceController:  Invalid or no xd_gain parameters provided, aborting "
+        "controller init!");
+    return false;
+  } else {
+    Eigen::Map<const Eigen::Matrix<double, 6, 1>> xd_gains_map(xd_gains_.data());
+    _xd_gains = xd_gains_map;
+  }
+
+  if (!node_handle.getParam("coriolis_factor", coriolis_factor_)) {
+    ROS_INFO_STREAM("JointSpaceImpedanceController: coriolis_factor not found. Defaulting to "
+                    << coriolis_factor_);
+  }
+
+  auto* state_interface = robot_hw->get<franka_hw::FrankaStateInterface>();
+  if (state_interface == nullptr) {
+    ROS_ERROR_STREAM("JointSpaceImpedanceController: Error getting state interface from hardware");
+    return false;
+  }
+  try {
+    state_handle_ =
+        make_unique<franka_hw::FrankaStateHandle>(state_interface->getHandle(arm_id + "_robot"));
+  }
+
+  catch (hardware_interface::HardwareInterfaceException& ex) {
+    ROS_ERROR_STREAM(
+        "JointSpaceImpedanceController: Exception getting state handle from interface: "
+        << ex.what());
+    return false;
+  }
+
+  auto* model_interface = robot_hw->get<franka_hw::FrankaModelInterface>();
+  if (model_interface == nullptr) {
+    ROS_ERROR_STREAM("JointSpaceImpedanceController: Error getting model interface from hardware");
+    return false;
+  }
+  try {
+    model_handle_ =
+        make_unique<franka_hw::FrankaModelHandle>(model_interface->getHandle(arm_id + "_model"));
+  } catch (hardware_interface::HardwareInterfaceException& ex) {
+    ROS_ERROR_STREAM(
+        "JointSpaceImpedanceController: Exception getting model handle from interface: "
+        << ex.what());
+    return false;
+  }
+
+  auto* effort_joint_interface = robot_hw->get<hardware_interface::EffortJointInterface>();
+  if (effort_joint_interface == nullptr) {
+    ROS_ERROR_STREAM(
+        "JointSpaceImpedanceController: Error getting effort joint interface from hardware");
+    return false;
+  }
+  for (size_t i = 0; i < 7; ++i) {
+    try {
+      effort_handles_.push_back(effort_joint_interface->getHandle(joint_names[i]));
+    } catch (const hardware_interface::HardwareInterfaceException& ex) {
+      ROS_ERROR_STREAM(
+          "JointSpaceImpedanceController: Exception getting joint handles: " << ex.what());
+      return false;
+    }
+  }
+
+  return true;
+}
+
+void JointSpaceImpedanceController::starting(const ros::Time& /* time */) {
+  // Get initial end-effector's pose
+
+  const franka::RobotState& robot_state_ = state_handle_->getRobotState();
+
+  gripper_close = false;
+  gripper_open = false;
+
+  _elapsed_time_ = ros::Duration(0.0);
+  _t = _elapsed_time_.toSec();
+  _printtime = 0.0;
+  _timeinterval = 0.01;
+  zmq_start = true;
+  zmq_cnt = 0;
+
+  // Initial setting / calculate hand trajectory in advance
+  _init_theta = -3.14*0.5;
+  _goal_theta = -3.14;
+  _bool_plan.fill(false);
+  _cnt_plan = 0;
+  _bool_plan[_cnt_plan] = true;
+
+  _q.setZero(7);
+  _qdot.setZero(7);
+  _q_des.setZero(7);
+  _qdot_des.setZero(7);
+  _x_hand.setZero(6);
+  _xdot_hand.setZero(6);
+  _x_des_hand.setZero(6);
+  _xdot_des_hand.setZero(6);
+  _x_err_hand.setZero(6);
+  _xdot_err_hand.setZero(6);
+  _R_des_hand.setIdentity(3, 3);
+  _R_hand.setIdentity(3, 3);
+  _Rdot_des_hand.setIdentity(3, 3);
+  _Rdot_hand.setIdentity(3, 3);
+  _J_hands(6, 7);
+  _mass(7, 7);
+  _coriolis(7, 1);
+  _target_plan.clear();
+  _Tvr.setIdentity(4, 4);
+  _motion_done = false;
+
+  _cnt_plot = 0;
+  _q_plot.setZero(10000, 7);
+  _qdes_plot.setZero(10000, 7);
+  _x_plot.setZero(10000, 6);
+  _xdes_plot.setZero(10000, 6);
+  _xdoterr_plot.setZero(10000, 3);
+  _xerr_plot.setZero(10000, 3);
+  _robot.pos << 0, 0, 0;
+  _robot.zrot = 0;      // M_PI;
+  _robot.ee_align = DEG2RAD * (-90);
+
+  Matrix3d rot_obj(3, 3);
+  rot_obj << 0, -1, 0, 1, 0, 0, 0, 0, 1;
+  _obj.name = "HANDLE_VALVE";
+  _obj.o_margin << 0, 0.149, 0;
+  _obj.o_margin = rot_obj * _obj.o_margin;
+  _obj.r_margin << 0.119, 0, 0;  // East side of the origin
+  _obj.r_margin = rot_obj * _obj.r_margin;
+  _obj.grab_dir << _obj.r_margin;  //_obj.o_margin.cross(_obj.r_margin); //  //
+  _obj.pos << 0.43, 0.0, 0.9;      // 0.43, 0.0, 0.9;
+  // obj.pos << 0.44296161, -0.2819804 ,  0.00434591;
+  _gripper_close = 0.01;  // 0.01;
+  _gripper_open = 0.04;
+  _obj.grab_vector = _obj.grab_dir.normalized();
+  _obj.normal_vector = -_obj.o_margin.normalized();
+  _obj.radius = _obj.r_margin.norm();
+
+  Vector4d xaxis;
+  Vector4d yaxis;
+  Vector4d zaxis;
+  Vector4d porg;
+  Matrix4d Tvb;  // valve handle -> valve base
+  Matrix4d Tbu;  // valve base -> universal
+  Matrix4d Tur;  // universal -> robot
+  Matrix4d Tvr;  // valve handle -> valve vase -> universal -> robot!!
+
+  // calc target x,y,z
+  xaxis << _obj.r_margin.normalized(), 0;
+  yaxis << _obj.o_margin.normalized().cross(_obj.r_margin.normalized()), 0;
+  zaxis << _obj.o_margin.normalized(), 0;
+  porg << _obj.o_margin, 1;
+
+  Tvb << xaxis, yaxis, zaxis, porg;
+
+  Tbu << 1, 0, 0, _obj.pos(0), 0, 1, 0, _obj.pos(1), 0, 0, 1, _obj.pos(2), 0, 0, 0, 1;
+
+  Tur << cos(-_robot.zrot), sin(-_robot.zrot), 0, _robot.pos(0), -sin(-_robot.zrot),
+      cos(-_robot.zrot), 0, _robot.pos(1), 0, 0, 1, -_robot.pos(2), 0, 0, 0, 1;
+
+  Tvr << Tur * Tbu * Tvb;
+  _Tvr = Tvr;
+
+  InitMotionPlan(_init_theta, _goal_theta);
+  UpdateStates();
+}
+
+void JointSpaceImpedanceController::update(const ros::Time& /*time*/, const ros::Duration& period) {
+  _elapsed_time_ += period;
+  _t = _elapsed_time_.toSec();
+  _dt = period.toSec();
+  // Get Franka's model information
+
+  // transform useful robot states into Eigen format (_q,_qdot,_x_hand, _xdot_hand, rot.. )
+
+  UpdateStates();
+
+
+  zmq_cnt += 1;
+  
+  if ((zmq_start)&&(zmq_cnt == 1000)) {
+    // cout<<"zmq :"<<zmq_cnt<<endl;
+    std::chrono::steady_clock::time_point st_start_time;
+    st_start_time = std::chrono::steady_clock::now();
+
+    double control_time_real_ = 0.0;
+
+    socket.bind("tcp://*:5557");
+    // cout<<"zmq 1:"<<zmq_cnt<<endl;
+    socket2.connect("tcp://161.122.114.37:5558");
+    // cout<<input<<endl;s
+    control_time_real_ = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - st_start_time)
+                             .count();
+    control_time_real_ = control_time_real_ / 1000;
+    cout << "all : " << control_time_real_ << "ms" << endl << endl;
+    zmq_start = false;
+    zmq_cnt = 0;
+
+    
+  }
+  if (zmq_start==false) {
+    
+    for (int i = 0; i < 7; i++) {
+      Buffer[i] = _q(i);
+      Buffer[i + 7] = _qdot(i);
+    }
+    
+    // if (zmq_cnt == 5){
+      zmq_cnt = 0;  
+      socket.send(zmq::buffer(Buffer), zmq::send_flags::dontwait);
+      // cout<<"zmq 2:"<<zmq_cnt<<endl;
+      auto result = socket2.recv(reply, zmq::recv_flags::dontwait);
+      // cout<<"zmq 3:"<<zmq_cnt<<endl;
+      memcpy(Buffer_Robot.data(),reply.data(),14*sizeof(float));
+      for (size_t i=0;i<7;++i){
+        cout<<Buffer_Robot[i]<<", "  ;
+      }
+      cout<<endl;
+      // cout<<"result : "<<Buffer_Robot[0]<<endl;
+    // }
+    
+  }
+
+  if (!_motion_done) {
+    Target target = _target_plan[_cnt_plan];
+    if (_bool_plan[_cnt_plan] && !target.state.empty()) {
+      MotionPlan(target);
+      gripper_open = target.gripper;
+      gripper_close = !target.gripper;
+    }
+    int joint_done = 0;
+    int hand_done = 0;
+    int valve_done = 0;
+    if (target.state == "home") {
+      JointTrajectory.update_time(_t);
+      _q_des = JointTrajectory.position_cubicSpline();
+      _qdot_des = JointTrajectory.velocity_cubicSpline();
+
+      _torque_des = JointControl();
+      // GripperControl(); // planning + torque generation
+      if (JointTrajectory.check_trajectory_complete() == 1) {
+        _cnt_plan += 1;
+        _bool_plan[_cnt_plan] = true;
+        joint_done = 1;
+        printf("target %d is over, move to next target %d\n", _cnt_plan - 1, _cnt_plan);
+        printf("It was joint impedance control.\n");
+        cout << "x_hand :" << _x_hand.transpose() << endl;
+        cout << "d_hand :" << _x_des_hand.transpose() << endl;
+        cout << "error  :" << (_x_des_hand - _x_hand).transpose() << endl;
+        cout << "q : " << _q.transpose() << endl << endl;
+      }
+    } else if (target.state == "nearvalve") {
+      HandTrajectory.update_time(_t);
+      _x_des_hand.head(3) = HandTrajectory.position_cubicSpline();
+      _xdot_des_hand.head(3) = HandTrajectory.velocity_cubicSpline();
+      _R_des_hand = HandTrajectory.rotationCubic();
+      _x_des_hand.segment<3>(3) = CustomMath::GetBodyRotationAngle(_R_des_hand);
+      _xdot_des_hand.segment<3>(3) = HandTrajectory.rotationCubicDot();
+
+      _torque_des = OperationalSpaceControl();
+      // GripperControl();
+
+      if (HandTrajectory.check_trajectory_complete() == 1) {
+        _cnt_plan += 1;
+        _bool_plan[_cnt_plan] = true;
+        hand_done = 1;
+        printf("target %d is over, move to next target %d\n", _cnt_plan - 1, _cnt_plan);
+        printf("It was operational space control.\n");
+        cout << "x_hand :" << _x_hand.transpose() << endl;
+        cout << "d_hand :" << _x_des_hand.transpose() << endl;
+        cout << "error  :" << (_x_des_hand - _x_hand).transpose() << endl;
+        cout << "q : " << _q.transpose() << endl << endl;
+      }
+
+    } else if (target.state == "onvalve") {
+      _theta_des = CircularTrajectory.update_time(_t);
+      _x_des_hand.head(3) = CircularTrajectory.position_circular();
+      _xdot_des_hand.head(3) = CircularTrajectory.velocity_circular();
+      _x_des_hand.tail(3) = CircularTrajectory.rotation_circular();
+      _xdot_des_hand.tail(3) = CircularTrajectory.rotationdot_circular();
+      _R_des_hand =
+          CustomMath::GetBodyRotationMatrix(_x_des_hand(3), _x_des_hand(4), _x_des_hand(5));
+
+      _torque_des = OperationalSpaceControl();
+      // GripperControl();
+
+      if (CircularTrajectory.check_trajectory_complete() == 1) {
+        _cnt_plan += 1;
+        _bool_plan[_cnt_plan] = true;
+        valve_done = 1;
+        printf("target %d is over, move to next target %d\n", _cnt_plan - 1, _cnt_plan);
+      }
+    }
+
+    // Gripper
+    if (gripper_close) {
+      epsilon.inner = 0.05;  // 0.005;
+      epsilon.outer = 0.05;  // 0.005;
+      close_goal.speed = 0.1;
+      close_goal.width = 0.005;  // 0.003;
+      close_goal.force = 100.0;
+      close_goal.epsilon = epsilon;
+      gripper_ac_close.sendGoal(close_goal);
+      gripper_close = false;
+    }
+    if (gripper_open) {
+      open_goal.speed = 0.1;
+      open_goal.width = 0.08;
+      gripper_ac_open.sendGoal(open_goal);
+      gripper_open = false;
+    }
+
+    
+    
+    for (size_t i = 0; i < 7; ++i) {
+      effort_handles_[i].setCommand(_torque_des[i]);
+      // array<double, 7> coriolis_array = model_handle_->getCoriolis();
+      // effort_handles_[i].setCommand(0.0);
+    }
+  } else {
+    array<double, 7> coriolis_array = model_handle_->getCoriolis();
+    for (size_t i = 0; i < 7; ++i) {
+      effort_handles_[i].setCommand(coriolis_array[i]);
+      // effort_handles_[i].setCommand(0.0);
+    }
+
+    if (_cnt_plot != 0) {
+      printf("save csv\n");
+      std::string filename = "joint_tunning.csv";
+      writeToCSVfile(filename, _qdes_plot, _q_plot, _xdes_plot, _x_plot, _xerr_plot, _xdoterr_plot);
+
+      _cnt_plot = 0;
+    }
+  }
+}
+
+void JointSpaceImpedanceController::writeToCSVfile(string filename,
+                                                   MatrixXd qd,
+                                                   MatrixXd q,
+                                                   MatrixXd xd,
+                                                   MatrixXd x,
+                                                   MatrixXd xe,
+                                                   MatrixXd xdote) {
+  // Open the file for writing
+  string path = "/home/kist/catkin_ws/src/franka_ros/franka_valve/gnu_plot_joints/";
+  path = path + filename;
+  std::ofstream outputFile(path);
+
+  if (!outputFile.is_open()) {
+    std::cerr << "Error opening file " << filename << std::endl;
+  }
+  // outputFile << "qd1,q1,qd2,q2,qd3,q3,qd4,q4,qd5,q5,qd6,q6,qd7,q7,xd,x,yd,y,zd,z,rd,r,pd,p,yd,y"
+  //            << endl;
+  // Write the matrix data to the CSV file
+  for (Eigen::Index i = 0; i < _cnt_plot; ++i) {
+    for (Eigen::Index j = 0; j < 7; ++j) {
+      outputFile << qd(i, j);
+      outputFile << ",";
+      outputFile << q(i, j);
+      outputFile << ",";
+    }
+    for (Eigen::Index j = 0; j < 6; ++j) {
+      outputFile << xd(i, j);
+      outputFile << ",";
+      outputFile << x(i, j);
+      outputFile << ",";
+
+      // if (j < matrix.cols() - 1) {
+      //   outputFile << ",";  // Separate columns with a comma
+      // }
+    }
+    for (Eigen::Index j = 0; j < 3; ++j) {
+      outputFile << xe(i, j);
+      outputFile << ",";
+      outputFile << xdote(i, j);
+      outputFile << ",";
+
+      // if (j < matrix.cols() - 1) {
+      //   outputFile << ",";  // Separate columns with a comma
+      // }
+    }
+    outputFile << "\n";  // Move to the next row
+  }
+  outputFile.close();
+}
+
+void JointSpaceImpedanceController::gripperCloseCallback(const std_msgs::Bool& msg) {
+  gripper_close = msg.data;
+  gripper_open = false;
+}
+
+void JointSpaceImpedanceController::gripperOpenCallback(const std_msgs::Bool& msg) {
+  gripper_open = msg.data;
+  gripper_close = false;
+}
+
+array<double, 7> JointSpaceImpedanceController::saturateTorqueRate(
+    const array<double, 7>& tau_d_calculated,
+    const array<double, 7>& tau_J_d) {  // NOLINT (readability-identifier-naming)
+  array<double, 7> tau_d_saturated{};
+  for (size_t i = 0; i < 7; i++) {
+    double difference = tau_d_calculated[i] - tau_J_d[i];
+    tau_d_saturated[i] = tau_J_d[i] + max(min(difference, kDeltaTauMax), -kDeltaTauMax);
+  }
+  return tau_d_saturated;
+}
+void JointSpaceImpedanceController::InitMotionPlan(double init_theta, double goal_theta) {
+  // start position -> move to valve -> generate circular trajectory -> start position
+
+  double motion_time_const = 10.0;
+  double motion_time;
+
+  Target onvalve;
+  onvalve.state = "onvalve";
+
+  Target home;
+  home.state = "home";
+
+  // _target_plan.push_back(home);
+  // _target_plan.back().gripper = true;  //_gripper_open;
+  // _target_plan.back().time = 2.0;
+  // _target_plan.back().q_goal={0, -0.785398163397, 0, -2.35619449019, 0, 1.57079632679,
+  // 0.785398163397};
+
+  // _target_plan.push_back(home);
+  // _target_plan.back().gripper = true;  //_gripper_open;
+  // _target_plan.back().time = 3.0;
+  // _target_plan.back().q_goal={-0.4232848, 0.1266, -0.05839, -1.118, -0.0031, 2.236, 0.5012};
+  // _target_plan.push_back(home);
+  // _target_plan.back().gripper = true;  //_gripper_open;
+  // _target_plan.back().time = 3.0;
+  // _target_plan.back().q_goal={ 0.7409, 0.1290, -0.137, -2.28656, 0.01745, 2.39474, 1.969};
+  Objects obj_above = _obj;
+  obj_above.o_margin = obj_above.o_margin + obj_above.o_margin.normalized() * 0.05;
+  _target_plan.push_back(TargetTransformMatrix(obj_above, _robot, init_theta));
+  _target_plan.back().gripper = true;  //_gripper_open;
+  _target_plan.back().time = 4.0;
+  _target_plan.back().state = "nearvalve";
+  cout << "target 1:" << _target_plan.back().x << "," << _target_plan.back().y << ","
+       << _target_plan.back().z << "," << _target_plan.back().roll << ","
+       << _target_plan.back().pitch << "," << _target_plan.back().yaw << endl;
+
+  _target_plan.push_back(TargetTransformMatrix(_obj, _robot, init_theta));
+  _target_plan.back().gripper = true;  //_gripper_open;
+  _target_plan.back().time = 1.0;
+  _target_plan.back().state = "nearvalve";
+  cout << "target 2:" << _target_plan.back().x << "," << _target_plan.back().y << ","
+       << _target_plan.back().z << "," << _target_plan.back().roll << ","
+       << _target_plan.back().pitch << "," << _target_plan.back().yaw << endl;
+
+  _target_plan.push_back(TargetTransformMatrix(_obj, _robot, init_theta));
+  _target_plan.back().gripper = true;  //_gripper_close;
+  _target_plan.back().time = 0.5;
+  _target_plan.back().state = "nearvalve";
+  cout << "target 3:" << _target_plan.back().x << "," << _target_plan.back().y << ","
+       << _target_plan.back().z << "," << _target_plan.back().roll << ","
+       << _target_plan.back().pitch << "," << _target_plan.back().yaw << endl;
+
+  _target_plan.push_back(onvalve);
+  _target_plan.back().gripper = true;  //_gripper_close;
+  motion_time = abs(motion_time_const * abs(goal_theta - init_theta) * _obj.r_margin.norm());
+  _target_plan.back().time = motion_time;
+  _target_plan.back().gripper = _gripper_close;
+  cout << "target 4:" << _target_plan.back().x << "," << _target_plan.back().y << ","
+       << _target_plan.back().z << "," << _target_plan.back().roll << ","
+       << _target_plan.back().pitch << "," << _target_plan.back().yaw << endl;
+
+  _target_plan.push_back(TargetTransformMatrix(_obj, _robot, goal_theta));
+  _target_plan.back().gripper = true;  // _gripper_open;
+  _target_plan.back().time = .5;
+  _target_plan.back().state = "nearvalve";
+  cout << "target 5:" << _target_plan.back().x << "," << _target_plan.back().y << ","
+       << _target_plan.back().z << "," << _target_plan.back().roll << ","
+       << _target_plan.back().pitch << "," << _target_plan.back().yaw << endl;
+
+  _target_plan.push_back(TargetTransformMatrix(obj_above, _robot, goal_theta));
+  _target_plan.back().gripper = true;  // _gripper_open;
+  _target_plan.back().time = 1.0;
+  _target_plan.back().state = "nearvalve";
+  cout << "target 6:" << _target_plan.back().x << "," << _target_plan.back().y << ","
+       << _target_plan.back().z << "," << _target_plan.back().roll << ","
+       << _target_plan.back().pitch << "," << _target_plan.back().yaw << endl;
+
+ _target_plan.push_back(home);
+  _target_plan.back().gripper = true;  //_gripper_open;
+  _target_plan.back().time = 3.0;
+  _target_plan.back().q_goal={0, -0.785398163397, 0, -2.35619449019, 0, 1.57079632679, 0.785398163397};
+
+}
+
+void JointSpaceImpedanceController::MotionPlan(Target target) {
+  _bool_plan[_cnt_plan] = false;
+  float start_time = _t;
+  float end_time = start_time + target.time;
+
+  if (target.state == "home") {
+    VectorXd q_goal(7), qdot_goal(7);
+
+    q_goal << target.q_goal[0], target.q_goal[1], target.q_goal[2], target.q_goal[3],
+        target.q_goal[4], target.q_goal[5], target.q_goal[6];
+    qdot_goal.setZero();
+
+    JointTrajectory.reset_initial(start_time, _q, _qdot);
+    JointTrajectory.update_goal(q_goal, qdot_goal, end_time);
+
+  } else if (target.state == "nearvalve") {
+    VectorXd x_goal_hand(6), xdot_goal_hand(6);
+
+    x_goal_hand(0) = target.x;
+    x_goal_hand(1) = target.y;
+    x_goal_hand(2) = target.z;
+    x_goal_hand(3) = target.roll;
+    x_goal_hand(4) = target.pitch;
+    x_goal_hand(5) = target.yaw;
+
+    xdot_goal_hand.setZero();
+
+    HandTrajectory.reset_initial(start_time, _x_hand, _xdot_hand);
+    HandTrajectory.update_goal(x_goal_hand, xdot_goal_hand, end_time);
+
+  } else if (target.state == "onvalve") {
+    CircularTrajectory.reset_initial(start_time, _obj.grab_vector, _obj.normal_vector, _obj.radius,
+                                     _Tvr, _dt);
+    CircularTrajectory.update_goal(end_time, _init_theta, _goal_theta);
+  }
+}
+
+void JointSpaceImpedanceController::UpdateStates() {
+  const franka::RobotState& robot_state_ = state_handle_->getRobotState();
+  array<double, 7> coriolis_array = model_handle_->getCoriolis();
+  array<double, 7> gravity_array = model_handle_->getGravity();
+  array<double, 49> mass_array = model_handle_->getMass();
+
+  const array<double, 42>& jacobian_array =
+      model_handle_->getZeroJacobian(franka::Frame::kEndEffector);
+
+  _J_hands = Map<const Matrix<double, 6, 7>>(jacobian_array.data());
+  _mass = Map<const Matrix<double, 7, 7>>(mass_array.data());
+  vector<double> armateur = {0.5, 0.5, 0.3, 0.3, 0.3, 0.3, 0.2, 0.12};
+  for (size_t i = 0; i < 7; ++i) {
+    _mass(i, i) += armateur[i];
+  }
+  _coriolis = Map<const Matrix<double, 7, 1>>(coriolis_array.data());
+
+  Eigen::Map<const Eigen::Matrix<double, 7, 1>> q_map(robot_state_.q.data());
+  Eigen::Map<const Eigen::Matrix<double, 7, 1>> qdot_map(robot_state_.dq.data());
+  _q = q_map;
+  _qdot = qdot_map;
+
+  Affine3d ee_pose(Matrix4d::Map(robot_state_.O_T_EE.data()));
+  Vector3d ee_position(ee_pose.translation());
+  Matrix3d ee_rotation(ee_pose.linear());
+  _x_hand.head(3) = ee_position;
+  _x_hand.tail(3) = CustomMath::GetBodyRotationAngle(ee_rotation);
+  _R_hand = ee_rotation;
+
+  _xdot_hand = _J_hands * _qdot;
+  _Rdot_hand = CustomMath::GetBodyRotationMatrix(_xdot_hand(3), _xdot_hand(4), _xdot_hand(5));
+
+  if (_cnt_plan < _target_plan.size()) {
+    _motion_done = false;
+  } else {
+    _motion_done = true;
+  }
+
+  // _qdes_plot.row(_cnt_plot) = _q_des;
+  //   _q_plot.row(_cnt_plot) = _q;
+  //   _xdes_plot.row(_cnt_plot) = _x_des_hand;
+  //   _x_plot.row(_cnt_plot) = _x_hand;
+
+  //   _cnt_plot += 1;
+
+  if ((_t - _printtime > _timeinterval) && !_motion_done) {
+    _printtime = _t;
+
+    _qdes_plot.row(_cnt_plot) = _q_des;
+    _q_plot.row(_cnt_plot) = _q;
+    _xdes_plot.row(_cnt_plot) = _x_des_hand;
+    _x_plot.row(_cnt_plot) = _x_hand;
+
+    _xdoterr_plot.row(_cnt_plot) = _xdot_err_hand.tail(3);
+    _xerr_plot.row(_cnt_plot) = _x_err_hand.tail(3);
+
+    _cnt_plot += 1;
+    // cout<< fixed << setprecision(3)<<"pitch err : "<<_x_err_hand(4)<<"  pitch dot err
+    // :"<<_xdot_err_hand(4)<<endl;
+  }
+}
+array<double, 7> JointSpaceImpedanceController::OperationalSpaceControl() {
+  const franka::RobotState& robot_state_ = state_handle_->getRobotState();
+  VectorXd force(6), torque(7);
+
+  Matrix<double, 7, 6> J_bar_hands(CustomMath::pseudoInverseQR(_J_hands));
+  Matrix<double, 6, 6> lambda(CustomMath::pseudoInverseQR(_J_hands.transpose()) * _mass *
+                              J_bar_hands);
+
+  _x_err_hand.segment(0, 3) = _x_des_hand.head(3) - _x_hand.head(3);
+  _x_err_hand.segment(3, 3) = -CustomMath::getPhi(_R_hand, _R_des_hand);
+
+  _xdot_err_hand.segment(0, 3) = _xdot_des_hand.head(3) - _xdot_hand.head(3);
+  _xdot_err_hand.segment(3, 3) = -CustomMath::getPhi(_Rdot_hand, _Rdot_des_hand);
+  // if (_t - _printtime > 0.1) {
+  //   _printtime = _t;
+  //   cout<< fixed << setprecision(2)<<"_x_err    : "<<_x_err_hand.transpose()<<endl;
+  //   cout << fixed << setprecision(2)<<"_xdot_err : "<<_xdot_err_hand.transpose()<<endl;
+  // }
+  // force = k_gains_ * _x_err_hand + d_gains_ * _xdot_err_hand;
+  force = _xk_gains.cwiseProduct(_x_err_hand) + _xd_gains.cwiseProduct(_xdot_err_hand);
+
+  torque = _J_hands.transpose() * lambda * force + coriolis_factor_ * _coriolis;
+
+  array<double, 7> tau_d;
+  for (int i = 0; i < 7; ++i) {
+    tau_d[i] = torque(i);
+  }
+  array<double, 7> tau_d_saturated = saturateTorqueRate(tau_d, robot_state_.tau_J_d);
+
+  return tau_d_saturated;
+}
+
+// void JointSpaceImpedanceController::CLIK()
+// {
+// 	__x_err_hand.segment(0, 3) = _x_des_hand.head(3) - _x_hand.head(3);
+
+// 	__x_err_hand.segment(3, 3) = -CustomMath::getPhi(Model._R_hand, _R_des_hand);
+
+// 	_J_bar_hands = CustomMath::pseudoInverseQR(_J_hands);
+// 	_qdot_des = _J_bar_hands * (_xdot_des_hand + _x_kp * (__x_err_hand));// +
+// __x_err_hand.norm()*_x_force); 	_q_des = _q_des + _dt * _qdot_des;
+
+// 	_torque = Model._A * (_kpj * (_q_des - _q) + _kdj * (_qdot_des - _qdot)) + Model._bg;
+// }
+
+array<double, 7> JointSpaceImpedanceController::JointControl() {
+  const franka::RobotState& robot_state_ = state_handle_->getRobotState();
+
+  VectorXd force(6), torque(7), torque_0(7);
+
+  // cout<<"k gain : "<<_k_gains.transpose()<<endl;
+  // cout<<"torque : "<<torque.transpose()<<endl;
+  // if (_t - _printtime > _timeinterval) {
+  //   _printtime = _t;
+  // cout<<"q des : "<<_q_des.transpose()<<endl;
+  // cout<<"q     : "<<_q.transpose()<<endl;
+  // cout<<"torque  : "<<torque.transpose()<<endl;
+  // cout<<"torque0 : "<<torque_0.transpose()<<endl;
+  // cout<<"qd-q : "<<(_q_des - _q).transpose()<<endl;
+  // cout<<"entry : "<<_mass.diagonal().transpose()<<endl;
+  // cout<<"mass :\n"<<_mass<<endl;
+  // std::array<double, 7> g = model_handle_->getGravity();
+  // Eigen::Map<const Eigen::Matrix<double, 7, 1>> gravity(g.data());
+  // Eigen::Map<const Eigen::Matrix<double, 7, 1>> torque_robot(robot_state_.tau_J.data());
+
+  // cout<<"g: "<<gravity.transpose()<<endl;
+  // cout<<"total (b+g+tau) :"<<(gravity+torque).transpose()<<endl;
+  // cout<<"torque_robot    :"<<torque_robot.transpose()<<endl;
+  // }
+
+  torque = _mass * (_k_gains.cwiseProduct(_q_des - _q) + _d_gains.cwiseProduct(_qdot_des - _qdot)) +
+           coriolis_factor_ * _coriolis;
+
+  torque_0 = _mass.diagonal().cwiseProduct(_k_gains.cwiseProduct(_q_des - _q) +
+                                           _d_gains.cwiseProduct(_qdot_des - _qdot)) +
+             coriolis_factor_ * _coriolis;
+
+  array<double, 7> tau_d;
+  for (int i = 0; i < 7; ++i) {
+    tau_d[i] = torque(i);
+  }
+  array<double, 7> tau_d_saturated = saturateTorqueRate(tau_d, robot_state_.tau_J_d);
+
+  return tau_d_saturated;
+}
+
+JointSpaceImpedanceController::Target
+JointSpaceImpedanceController::TargetTransformMatrix(Objects obj, Robot robot, double angle) {
+  // frame u : universal
+  // frame v : valve rotation axis
+  // frame b : valve base orgin (same rotation with frame u)
+  // frame g : gripper
+  // frame e : end-effector
+  Vector4d xaxis;
+  Vector4d yaxis;
+  Vector4d zaxis;
+  Vector4d porg;
+  Matrix4d Tvb;  // valve handle -> valve base
+  Matrix4d Tbu;  // valve base -> universal
+  Matrix4d Tur;  // universal -> robot
+  Matrix4d Tvr;  // valve handle -> valve vase -> universal -> robot!!
+
+  Target target;
+  Vector4d tmp;
+  Matrix3d Tug;  // universal -> gripper
+  Matrix3d Tge;  // gripper -> end-effector
+  Matrix3d Tue;  // universal -> gripper -> end-effector
+  // calc target x,y,z
+  xaxis << obj.r_margin.normalized(), 0;
+  yaxis << obj.o_margin.normalized().cross(obj.r_margin.normalized()), 0;
+  zaxis << obj.o_margin.normalized(), 0;
+  porg << obj.o_margin, 1;
+
+  Tvb << xaxis, yaxis, zaxis, porg;
+
+  Tbu << 1, 0, 0, obj.pos(0), 0, 1, 0, obj.pos(1), 0, 0, 1, obj.pos(2), 0, 0, 0, 1;
+
+  Tur << cos(-robot.zrot), sin(-robot.zrot), 0, robot.pos(0), -sin(-robot.zrot), cos(-robot.zrot),
+      0, robot.pos(1), 0, 0, 1, -robot.pos(2), 0, 0, 0, 1;
+
+  Tvr << Tur * Tbu * Tvb;
+
+  tmp << obj.r_margin.norm() * cos(angle), obj.r_margin.norm() * sin(angle), 0, 1;
+  tmp << Tvr * tmp;
+  target.x = tmp(0);
+  target.y = tmp(1);
+  target.z = tmp(2);
+
+  // calc target r,p,y
+  Tge << cos(robot.ee_align), -sin(robot.ee_align), 0, sin(robot.ee_align), cos(robot.ee_align), 0,
+      0, 0, 1;
+  Tug = JointSpaceImpedanceController::R3D(obj, -obj.o_margin.normalized(), angle);
+  Tue << Tug * Tge;
+
+  target.yaw = atan2(Tue(1, 0), Tue(0, 0)) + robot.zrot;
+  target.pitch = atan2(-Tue(2, 0), sqrt(pow(Tue(2, 1), 2) + pow(Tue(2, 2), 2)));
+  target.roll = atan2(Tue(2, 1), Tue(2, 2));
+
+  target.yaw = fmod(target.yaw + M_PI, 2 * M_PI);
+  if (target.yaw < 0) {
+    target.yaw += 2 * M_PI;
+  }
+  target.yaw = target.yaw - M_PI;
+
+  target.pitch = fmod(target.pitch + M_PI, 2 * M_PI);
+  if (target.pitch < 0) {
+    target.pitch += 2 * M_PI;
+  }
+  target.pitch = target.pitch - M_PI;
+
+  target.roll = fmod(target.roll + M_PI, 2 * M_PI);
+
+  if (target.roll < 0) {
+    target.roll += 2 * M_PI;
+  }
+  target.roll = target.roll - M_PI;
+
+  return target;
+}
+
+Matrix3d JointSpaceImpedanceController::R3D(Objects obj, Vector3d unitVec, double angle) {
+  Matrix3d Tug;
+  angle = -angle;  // frame은 반대 방향으로 회전 해야지, gripper방향이 유지된다.
+  double cosAngle = cos(angle);
+  double sinAngle = sin(angle);
+  double x = unitVec(0);
+  double y = unitVec(1);
+  double z = unitVec(2);
+  Matrix3d rotMatrix;
+  rotMatrix << cosAngle + (1 - cosAngle) * x * x, (1 - cosAngle) * x * y - sinAngle * z,
+      (1 - cosAngle) * x * z + sinAngle * y, (1 - cosAngle) * y * x + sinAngle * z,
+      cosAngle + (1 - cosAngle) * y * y, (1 - cosAngle) * y * z - sinAngle * x,
+      (1 - cosAngle) * z * x - sinAngle * y, (1 - cosAngle) * z * y + sinAngle * x,
+      cosAngle + (1 - cosAngle) * z * z;
+
+  Tug << rotMatrix * obj.grab_dir.normalized(),
+      rotMatrix * -obj.o_margin.normalized().cross(obj.grab_dir.normalized()),
+      rotMatrix * -obj.o_margin.normalized();
+  return Tug;
+}
+
+}  // namespace franka_valve
+
+PLUGINLIB_EXPORT_CLASS(franka_valve::JointSpaceImpedanceController,
+                       controller_interface::ControllerBase)

@@ -1,0 +1,234 @@
+joint_position_controller:
+    type: franka_valve/JointPositionController
+    arm_id: $(arg arm_id)
+    joint_names:
+        - $(arg arm_id)_joint1
+        - $(arg arm_id)_joint2
+        - $(arg arm_id)_joint3
+        - $(arg arm_id)_joint4
+        - $(arg arm_id)_joint5
+        - $(arg arm_id)_joint6
+        - $(arg arm_id)_joint7
+    k_gains:
+        - 600.0
+        - 600.0
+        - 600.0
+        - 600.0
+        - 2000.0
+        - 1200.0
+        - 3500.0
+    d_gains:
+        - 50.0
+        - 50.0
+        - 50.0
+        - 40.0
+        - 200.0
+        - 100.0
+        - 300.0
+    xk_gains:
+        - 600.0
+        - 600.0
+        - 600.0
+        - 1500.0
+        - 1500.0
+        - 1500.0
+    xd_gains:
+        - 50.0
+        - 50.0
+        - 50.0
+        - 40.0
+        - 40.0
+        - 40.0
+    coriolis_factor: 1.0
+        
+operational_space_controller:
+    type: franka_valve/OperationalSpaceController
+    arm_id: $(arg arm_id)
+    joint_names:
+        - $(arg arm_id)_joint1
+        - $(arg arm_id)_joint2
+        - $(arg arm_id)_joint3
+        - $(arg arm_id)_joint4
+        - $(arg arm_id)_joint5
+        - $(arg arm_id)_joint6
+        - $(arg arm_id)_joint7
+    k_gains:
+        - 400.0
+    d_gains:
+        - 40.0
+    coriolis_factor: 1.0
+    
+heuristic_motion_controller:
+    type: franka_valve/HeuristicMotionController
+    arm_id: $(arg arm_id)
+    joint_names:
+        - $(arg arm_id)_joint1
+        - $(arg arm_id)_joint2
+        - $(arg arm_id)_joint3
+        - $(arg arm_id)_joint4
+        - $(arg arm_id)_joint5
+        - $(arg arm_id)_joint6
+        - $(arg arm_id)_joint7
+    k_gains:
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+    d_gains:
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+    xk_gains:
+        - 400.0
+        - 400.0
+        - 400.0
+        - 450.0
+        - 450.0
+        - 450.0
+    xd_gains:
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+    coriolis_factor: 1.0
+    
+    
+rl_controller:
+    type: franka_valve/RLController
+    arm_id: $(arg arm_id)
+    joint_names:
+        - $(arg arm_id)_joint1
+        - $(arg arm_id)_joint2
+        - $(arg arm_id)_joint3
+        - $(arg arm_id)_joint4
+        - $(arg arm_id)_joint5
+        - $(arg arm_id)_joint6
+        - $(arg arm_id)_joint7
+    k_gains:
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+    d_gains:
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+    xk_gains:
+        - 400.0
+        - 400.0
+        - 400.0
+        - 450.0
+        - 450.0
+        - 450.0
+    xd_gains:
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+    coriolis_factor: 1.0
+    
+    
+joint_space_impedance_controller:
+    type: franka_valve/JointSpaceImpedanceController
+    arm_id: $(arg arm_id)
+    joint_names:
+        - $(arg arm_id)_joint1
+        - $(arg arm_id)_joint2
+        - $(arg arm_id)_joint3
+        - $(arg arm_id)_joint4
+        - $(arg arm_id)_joint5
+        - $(arg arm_id)_joint6
+        - $(arg arm_id)_joint7
+    k_gains:
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+    d_gains:
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+    xk_gains:
+        - 400.0
+        - 400.0
+        - 400.0
+        - 450.0
+        - 450.0
+        - 450.0
+    xd_gains:
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+    coriolis_factor: 1.0
+    
+    
+trained_controller:
+    type: franka_valve/TrainedController
+    arm_id: $(arg arm_id)
+    joint_names:
+        - $(arg arm_id)_joint1
+        - $(arg arm_id)_joint2
+        - $(arg arm_id)_joint3
+        - $(arg arm_id)_joint4
+        - $(arg arm_id)_joint5
+        - $(arg arm_id)_joint6
+        - $(arg arm_id)_joint7
+    k_gains:
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+    d_gains:
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+    xk_gains:
+        - 400.0
+        - 400.0
+        - 400.0
+        - 450.0
+        - 450.0
+        - 450.0
+    xd_gains:
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+    coriolis_factor: 1.0

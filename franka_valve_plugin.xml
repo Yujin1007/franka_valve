@@ -1,0 +1,37 @@
+<library path="lib/libfranka_valve">
+  <class name="franka_valve/JointPositionController" type="franka_valve::JointPositionController" base_class_type="controller_interface::ControllerBase">
+    <description>
+      franka valve control test 
+    </description>
+  </class>
+  
+   <class name="franka_valve/OperationalSpaceController" type="franka_valve::OperationalSpaceController" base_class_type="controller_interface::ControllerBase">
+    <description>
+      operational space controller 
+    </description>
+  </class>
+  
+  <class name="franka_valve/HeuristicMotionController" type="franka_valve::HeuristicMotionController" base_class_type="controller_interface::ControllerBase">
+    <description>
+      generate heuristic circular trajectory and control with operational space controller
+    </description>
+  </class>
+  
+  <class name="franka_valve/JointSpaceImpedanceController" type="franka_valve::JointSpaceImpedanceController" base_class_type="controller_interface::ControllerBase">
+    <description>
+      joint space impedance controller for gain tunning
+    </description>
+  </class>
+    <class name="franka_valve/TrainedController" type="franka_valve::TrainedController" base_class_type="controller_interface::ControllerBase">
+    <description>
+      RL agent implementation
+    </description>
+  </class>
+  
+    <class name="franka_valve/RLController" type="franka_valve::RLController" base_class_type="controller_interface::ControllerBase">
+    <description>
+      RL agent 
+    </description>
+  </class>
+
+</library>
