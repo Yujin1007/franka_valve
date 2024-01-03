@@ -24,6 +24,7 @@
 #include <franka_gripper/GraspAction.h>
 #include <franka_gripper/HomingAction.h>
 #include <franka_gripper/MoveAction.h>
+#include <franka_gripper/StopAction.h>
 #include <franka_gripper/franka_gripper.h>
 
 #include <std_msgs/Bool.h>
@@ -49,7 +50,8 @@ class RLController : public controller_interface::MultiInterfaceController<
 
   void gripperCloseCallback(const std_msgs::Bool& msg);
   void gripperOpenCallback(const std_msgs::Bool& msg);
-
+  void gripperStopCallback(const std_msgs::Bool& msg);
+  
  private:
   struct Target {
     double x;
@@ -58,7 +60,7 @@ class RLController : public controller_interface::MultiInterfaceController<
     double roll;
     double pitch;
     double yaw;
-    bool gripper;
+    int gripper;
     double time;
     string state;
     array<double, 7> q_goal;
@@ -113,19 +115,24 @@ class RLController : public controller_interface::MultiInterfaceController<
 
   franka_gripper::GraspGoal close_goal;
   franka_gripper::MoveGoal open_goal;
+  franka_gripper::StopGoal stop_goal;
   franka_gripper::GraspEpsilon epsilon;
 
   bool gripper_close;
   bool gripper_open;
+  bool gripper_stop;
 
   ros::Subscriber gripper_close_sub_;
   ros::Subscriber gripper_open_sub_;
+  ros::Subscriber gripper_stop_sub;
 
   actionlib::SimpleActionClient<franka_gripper::GraspAction> gripper_ac_close{
       "/franka_gripper/grasp", true};
   actionlib::SimpleActionClient<franka_gripper::MoveAction> gripper_ac_open{"/franka_gripper/move",
                                                                             true};
-
+  actionlib::SimpleActionClient<franka_gripper::StopAction> gripper_ac_stop{"/franka_gripper/stop",
+                                                                            true};
+  
   CTrajectory JointTrajectory;  // joint space trajectory
   HTrajectory HandTrajectory;   // task space trajectory
   RTrajectory CircularTrajectory;
@@ -133,7 +140,6 @@ class RLController : public controller_interface::MultiInterfaceController<
   array<bool, 30> _bool_plan;
   int _cnt_plan;
   float _start_time, _end_time;
-  double _gripper_open, _gripper_close;
 
   array<double, 7> _torque_des;
   MatrixXd _J_hands, _mass, _coriolis;
@@ -156,7 +162,7 @@ class RLController : public controller_interface::MultiInterfaceController<
   float _printtime, _timeinterval, _t, _dt;
   float _steptime, _stepinterval;
   bool _motion_done;
-  MatrixXd _q_plot, _qdes_plot, _x_plot, _xdes_plot, _qdot_plot, _drpy_plot, _torque_plot;
+  MatrixXd _q_plot, _qdes_plot, _x_plot, _xdot_plot, _xdes_plot, _qdot_plot, _drpy_plot, _torque_plot;
 
   MatrixXd _observation_data, _action_data;
 
