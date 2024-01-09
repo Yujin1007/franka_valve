@@ -515,7 +515,7 @@ double RTrajectory::angledot_cubicSpline()
 Vector3d RTrajectory::rotation_circular_calc(double theta){
 	Matrix3d Tug, Tge, Tue;
 	double angle;
-	double ee_align =0;//DEG2RAD*(-90); // end effector와 gripper 가 yaw방향으로 90도 틀어져있음 
+	double ee_align =DEG2RAD*(45);//DEG2RAD*(-90); // end effector와 gripper 가 yaw방향으로 90도 틀어져있음 
 	angle = -theta; // frame은 반대 방향으로 회전 해야지, gripper방향이 유지된다.
     double cosAngle = cos(angle);
     double sinAngle = sin(angle);

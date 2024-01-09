@@ -30,6 +30,7 @@
 #include <std_msgs/Bool.h>
 
 #include <franka_valve/actor.h>
+// #include <franka_valve/classifier.h>
 #include <franka_valve/trajectory.h>
 
 #include "zmq.hpp"
@@ -153,7 +154,10 @@ class RLController : public controller_interface::MultiInterfaceController<
   MatrixXd _Tvr;
 
   Actor RL_Actor;
-  VectorXd _obs_obj, _obs_q, _obs_rpy, _obs_rpyplan, _obs_posplan, _obs_pos;
+  // Classifier Classifier_cclk;
+  // Classifier Classifier_clk;
+  
+  VectorXd _obs_obj, _obs_q, _obs_rpy, _obs_drot, _obs_rpyplan, _obs_posplan, _obs_pos;
   VectorXd _observation;
   VectorXd _action, _drpy, _drpy_pre, _drpy_out;
   VectorXd _rpy_plan;
@@ -164,7 +168,7 @@ class RLController : public controller_interface::MultiInterfaceController<
   bool _motion_done;
   MatrixXd _q_plot, _qdes_plot, _x_plot, _xdot_plot, _xdes_plot, _qdot_plot, _drpy_plot, _torque_plot;
 
-  MatrixXd _observation_data, _action_data;
+  MatrixXd _observation_data, _action_data, _rpy_data;
 
   int _cnt_plot, _cnt_step;
 

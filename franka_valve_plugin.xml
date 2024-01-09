@@ -33,5 +33,10 @@
       RL agent 
     </description>
   </class>
+  <class name="franka_valve/VisionController" type="franka_valve::VisionController" base_class_type="controller_interface::ControllerBase">
+    <description>
+      vision code 
+    </description>
+  </class>
 
 </library>

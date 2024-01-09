@@ -36,7 +36,7 @@ private:
 
     ifstream weight;
 
-    double weight0[256][139];     //FC1_weight
+    double weight0[256][97];     //FC1_weight
     double weight1[256];        //FC1_bias 
     double weight2[256][256];   //FC2_weight
     double weight3[256];        //FC2_bias

@@ -12,7 +12,14 @@
 #include <hardware_interface/robot_hw.h>
 #include <ros/node_handle.h>
 #include <ros/time.h>
+#include <franka_gripper/GraspAction.h>
+#include <franka_gripper/HomingAction.h>
+#include <franka_gripper/MoveAction.h>
+#include <franka_gripper/StopAction.h>
+#include <franka_gripper/franka_gripper.h>
 
+#include <actionlib/client/simple_action_client.h>
+#include <actionlib/client/terminal_state.h>
 
 #include <franka_hw/franka_model_interface.h>
 #include <franka_hw/franka_state_interface.h>
@@ -34,7 +41,9 @@ class JointPositionController : public controller_interface::MultiInterfaceContr
   bool init(hardware_interface::RobotHW* robot_hw, ros::NodeHandle& node_handle) override;
   void starting(const ros::Time&) override;
   void update(const ros::Time&, const ros::Duration& period) override;
-
+  void gripperCloseCallback(const std_msgs::Bool& msg);
+  void gripperOpenCallback(const std_msgs::Bool& msg);
+  void gripperStopCallback(const std_msgs::Bool& msg);
  private:
   VectorXd _q, _qdot;
 
@@ -76,6 +85,26 @@ VectorXd _q_delta;
 VectorXd _qdot_delta;
 double _time;
 static constexpr double kDeltaTauMax{1.0};
+  franka_gripper::GraspGoal close_goal;
+  franka_gripper::MoveGoal open_goal;
+  franka_gripper::StopGoal stop_goal;
+  franka_gripper::GraspEpsilon epsilon;
+
+  bool gripper_close;
+  bool gripper_open;
+  bool gripper_stop;
+
+  ros::Subscriber gripper_close_sub_;
+  ros::Subscriber gripper_open_sub_;
+  ros::Subscriber gripper_stop_sub;
+
+  actionlib::SimpleActionClient<franka_gripper::GraspAction> gripper_ac_close{
+      "/franka_gripper/grasp", true};
+  actionlib::SimpleActionClient<franka_gripper::MoveAction> gripper_ac_open{"/franka_gripper/move",
+                                                                            true};
+  actionlib::SimpleActionClient<franka_gripper::StopAction> gripper_ac_stop{"/franka_gripper/stop",
+                                                                            true};
+   
   // Eigen::VectorXd _q(7), _qdot(7);
 };
 

@@ -80,6 +80,7 @@ add_library(franka_valve
   src/joint_position_controller.cpp
   src/operational_space_controller.cpp
   src/heuristic_motion_controller.cpp
+  src/vision_controller.cpp
   src/trained_controller.cpp
   src/joint_space_impedance_controller.cpp
   src/trajectory.cpp

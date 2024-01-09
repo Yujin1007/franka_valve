@@ -86,7 +86,6 @@ bool RLController::init(hardware_interface::RobotHW* robot_hw, ros::NodeHandle& 
   if (!node_handle.getParam("coriolis_factor", coriolis_factor_)) {
     ROS_INFO_STREAM("RLController: coriolis_factor not found. Defaulting to " << coriolis_factor_);
   }
-
   auto* state_interface = robot_hw->get<franka_hw::FrankaStateInterface>();
   if (state_interface == nullptr) {
     ROS_ERROR_STREAM("RLController: Error getting state interface from hardware");
@@ -101,7 +100,6 @@ bool RLController::init(hardware_interface::RobotHW* robot_hw, ros::NodeHandle& 
     ROS_ERROR_STREAM("RLController: Exception getting state handle from interface: " << ex.what());
     return false;
   }
-
   auto* model_interface = robot_hw->get<franka_hw::FrankaModelInterface>();
   if (model_interface == nullptr) {
     ROS_ERROR_STREAM("RLController: Error getting model interface from hardware");
@@ -114,7 +112,6 @@ bool RLController::init(hardware_interface::RobotHW* robot_hw, ros::NodeHandle& 
     ROS_ERROR_STREAM("RLController: Exception getting model handle from interface: " << ex.what());
     return false;
   }
-
   auto* effort_joint_interface = robot_hw->get<hardware_interface::EffortJointInterface>();
   if (effort_joint_interface == nullptr) {
     ROS_ERROR_STREAM("RLController: Error getting effort joint interface from hardware");
@@ -135,6 +132,8 @@ void RLController::starting(const ros::Time& /* time */) {
   // Get initial end-effector's pose
   const franka::RobotState& robot_state_ = state_handle_->getRobotState();
 
+  // Classifier_cclk.Initialize("classifier_cclk");
+  // Classifier_clk.Initialize("classifier_clk");
   gripper_close = false;
   gripper_open = false;
   gripper_stop = false;
@@ -153,8 +152,8 @@ void RLController::starting(const ros::Time& /* time */) {
   _qdot_mppi.setZero(7);
 
   // Initial setting / calculate hand trajectory in advance
-  _init_theta = M_PI * 0;
-  _goal_theta = M_PI * 1;
+  _init_theta = DEG2RAD*40;
+  _goal_theta = DEG2RAD*-60;
   int direction;
   direction = (_init_theta > _goal_theta) ? -1 : 1;
   _bool_plan.fill(false);
@@ -190,50 +189,62 @@ void RLController::starting(const ros::Time& /* time */) {
   _drpy_pre.setZero(3);
   _drpy_out.setZero(3);
   _drpy.setZero(3);
-  _obs_obj.setZero(14);
+  _obs_obj.setZero(11);
   _obs_q.setZero(_stack * 7);
   _obs_rpy.setZero(_stack * 6);
-  _obs_rpyplan.setZero(_stack * 6);
-  _obs_posplan.setZero(_stack * 3);
   _obs_pos.setZero(_stack * 3);
-  _observation.setZero(139);
-  _rpy_plan.setZero(3);
+  _obs_drot.setZero(6);
+  _observation.setZero(91);
   _motion_done = false;
 
   _cnt_plot = 0;
   _cnt_idx = 0;
   _drpy_plot.setZero(10000000, 3);
   _torque_plot.setZero(10000000, 7);
-  _observation_data.setZero(100000, 139);
-  _action_data.setZero(100000, 3);
+  _observation_data.setZero(100000, 97);
+  _action_data.setZero(100000, 6);
   _q_plot.setZero(10000, 7);
   _qdot_plot.setZero(10000, 7);
   _qdes_plot.setZero(10000, 7);
   _x_plot.setZero(10000, 6);
   _xdot_plot.setZero(10000, 6);
 
-  _xdes_plot.setZero(10000, 6);
+  _rpy_data.setZero(10000, 6);
   // _xdoterr_plot.setZero(10000, 3);
   // _xerr_plot.setZero(10000, 3);
 
   _robot.pos << 0, 0, 0;
   _robot.zrot = 0;      // M_PI;
-  _robot.ee_align = 0;  // DEG2RAD * (-90);
-  // _robot.ee_align = DEG2RAD * (-45);
+  // _robot.ee_align = 0;  // DEG2RAD * (-90);
+  _robot.ee_align = DEG2RAD * (45);
 
   Matrix3d rot_obj(3, 3);
   // rot_obj << 0, -1, 0, 1, 0, 0, 0, 0, 1;
-  rot_obj << 1, 0, 0, 0, 1, 0, 0, 0, 1;
+
+  rot_obj << 1, 0, 0, 
+             0, 0, -1,
+             0, 1, 0;
+  _obj.pos << 0.580994101778967, -0.045675755104744684, 0.115;
+  
+  // rot_obj << 0.226, -0.051,-0.973,
+  //           -0.941, -0.268, -0.205,
+  //           -0.25,   0.962, -0.109;
+  // _obj.pos << 0.60, 0.0, 0.2;
+  
+//  rot_obj << 0, -1, 0,
+//             -1, 0, 0,
+//             0, 0, -1;
+  // _obj.pos << 0.55, 0.0, 0.75;
+  
   _obj.name = "HANDLE_VALVE";
   // _obj.o_margin << 0, 0.149, 0;
-  _obj.o_margin << 0, 0, 0.143;
+  // _obj.o_margin << 0, 0, 0.143;
+  // _obj.r_margin << -0.12, 0, 0;  // East side of the origin
+  _obj.o_margin << 0, 0.143, 0 ;
+  _obj.r_margin << 0.12, 0, 0;  // East side of the origin
   _obj.o_margin = rot_obj * _obj.o_margin;
-  _obj.r_margin << -0.12, 0, 0;  // East side of the origin
   _obj.r_margin = rot_obj * _obj.r_margin;
   _obj.grab_dir << _obj.o_margin.cross(_obj.r_margin);  //_obj.r_margin;  //
-  // _obj.pos << 0.60, 0.0, 0.2;
-  _obj.pos << 0.580994101778967, -0.045675755104744684, 0.115;
-  // obj.pos << 0.44296161, -0.2819804 ,  0.00434591;
   // _gripper_close = 0.01;  // 0.01;
   // _gripper_open = 0.04;
   _obj.grab_vector = _obj.grab_dir.normalized();
@@ -266,8 +277,11 @@ void RLController::starting(const ros::Time& /* time */) {
   _Tvr = Tvr;
 
   InitMotionPlan(_init_theta, _goal_theta);
-  _obs_obj << _obj.pos(0), _obj.pos(1), _obj.pos(2), rot_obj(0, 0), rot_obj(1, 0), rot_obj(2, 0),
-      rot_obj(0, 1), rot_obj(2, 1), rot_obj(3, 1), _init_theta / (2 * M_PI), direction, 1, 0, 1;
+  
+  _obs_obj << _obj.radius, _obj.pos(0), _obj.pos(1), _obj.pos(2), rot_obj(0, 0), rot_obj(1, 0), rot_obj(2, 0),
+      rot_obj(0, 1), rot_obj(1, 1), rot_obj(2, 1), direction;
+
+  // cout<<_obs_obj<<endl;
 
   // _obs_obj<<0.5,	0	,0.899999976158142	,0.000796326727141,	0.999999701976776
   // ,0,	-0.999999701976776,	0.000796326727141,	0	,0.75	,-1	,1,0,	1;
@@ -275,23 +289,23 @@ void RLController::starting(const ros::Time& /* time */) {
   // cout << "object : \n" << _obs_obj.transpose() << endl;
   UpdateStates();
 
-  string line;
-  // vector<vector<float>> sim_actions;
+  // string line;
+  // // vector<vector<float>> sim_actions;
 
-  ifstream file;
-  file.open("/home/kist/Downloads/compare_robot/test_act.csv");
-  while (getline(file, line)) {
-    vector<float> row;
-    istringstream iss(line);
-    float value;
-    while (iss >> value) {
-      row.push_back(value);
-      if (iss.peek() == ',')
-        iss.ignore();
-    }
+  // ifstream file;
+  // file.open("/home/kist/Downloads/compare_robot/test_act.csv");
+  // while (getline(file, line)) {
+  //   vector<float> row;
+  //   istringstream iss(line);
+  //   float value;
+  //   while (iss >> value) {
+  //     row.push_back(value);
+  //     if (iss.peek() == ',')
+  //       iss.ignore();
+  //   }
 
-    sim_actions.push_back(row);
-  }
+  //   sim_actions.push_back(row);
+  // }
 }
 
 void RLController::update(const ros::Time& /*time*/, const ros::Duration& period) {
@@ -358,7 +372,11 @@ void RLController::update(const ros::Time& /*time*/, const ros::Duration& period
       _xdot_des_hand.segment<3>(3) = HandTrajectory.rotationCubicDot();
       _Rdot_des_hand = CustomMath::GetBodyRotationMatrix(_xdot_des_hand(3), _xdot_des_hand(4),
                                                          _xdot_des_hand(5));
-
+      
+      if (_t - _steptime > _stepinterval) {
+        _steptime = _t;
+        Observation();
+      }
       // _torque_des = OperationalSpaceControl();
       _torque_des = CLIK();
       // GripperControl();
@@ -387,8 +405,7 @@ void RLController::update(const ros::Time& /*time*/, const ros::Duration& period
       _x_des_hand.head(3) = CircularTrajectory.position_circular();
       _xdot_des_hand.head(3) = CircularTrajectory.velocity_circular();
       // for observation (desired rpy angle reference)
-      _rpy_plan = CircularTrajectory.rotation_circular();
-
+      
       if (_t - _steptime > _stepinterval) {
         _cnt_step = 0;
         _steptime = _t;
@@ -403,46 +420,50 @@ void RLController::update(const ros::Time& /*time*/, const ros::Duration& period
         //   _observation(i) = sim_actions[_cnt_plot][i];
         // }
         _action = RL_Actor.Forward(_observation);
-        // _action <<
+        
+        // _action << 0,0,0,1,0,0;
         // sim_actions[_cnt_plot][0],sim_actions[_cnt_plot][1],sim_actions[_cnt_plot][2],sim_actions[_cnt_plot][3],sim_actions[_cnt_plot][4],sim_actions[_cnt_plot][5];
 
         _drpy_pre = _drpy;
 
         _drpy = CustomMath::rotation6d2euler(_action);
 
-        // _observation_data.row(_cnt_plot) = _observation;
-        // _action_data.row(_cnt_plot) = _drpy;
-        // _qdes_plot.row(_cnt_plot) = _q_des;
+        // _drpy<<0,0,0;
+        _observation_data.row(_cnt_plot) = _observation;
+        _action_data.row(_cnt_plot) = _action;
+        _rpy_data.row(_cnt_plot) = _obs_rpy;
         // _q_plot.row(_cnt_plot) = _q;
         // _qdot_plot.row(_cnt_plot) = _qdot;
         // _xdes_plot.row(_cnt_plot) = _xdot_des_hand;
         // _x_plot.row(_cnt_plot) = _xdot_hand;
-        // _cnt_plot += 1;
+        _cnt_plot += 1;
       }
 
-      if (_drpy_pre[0] == 0.0) {
-        if (_cnt_step <= 50) {
-          _drpy_out = (_drpy - _drpy_pre) / 50 * _cnt_step + _drpy_pre;
+      // if (_drpy_pre[0] == 0.0) {
+      //   if (_cnt_step <= 50) {
+      //     _drpy_out = (_drpy - _drpy_pre) / 50 * _cnt_step + _drpy_pre;
 
-        } else {
-          _drpy_out = _drpy;
-        }
+      //   } else {
+      //     _drpy_out = _drpy;
+      //   }
         
-        cout << "cnt :" << _cnt_step << " drpy:" << _drpy_pre.transpose() << " out:" <<
-        _drpy_out.transpose()  <<endl;
+      //   // cout << "cnt :" << _cnt_step << " drpy:" << _drpy_pre.transpose() << " out:" <<
+      //   // _drpy_out.transpose()  <<endl;
 
-      } else {
-        if (_cnt_step <= 20) {
-          _drpy_out = (_drpy - _drpy_pre) / 20 * _cnt_step + _drpy_pre;
+      // } else {
+      //   if (_cnt_step <= 20) {
+      //     _drpy_out = (_drpy - _drpy_pre) / 20 * _cnt_step + _drpy_pre;
 
-        } else {
-          _drpy_out = _drpy;
-        }
+      //   } else {
+      //     _drpy_out = _drpy;
+      //   }
         
-      //   cout << "cnt :" << _cnt_step << " drpy:" << _drpy_pre.transpose() << " out:" <<
-      //   _drpy_out.transpose() << endl;
-      }
+      // //   cout << "cnt :" << _cnt_step << " drpy:" << _drpy_pre.transpose() << " out:" <<
+      // //   _drpy_out.transpose() << endl;
+      // }
 
+      
+      _drpy_out = (_drpy - _drpy_pre) / 100 * _cnt_step + _drpy_pre;
       // _drpy_out = _drpy;
 
       // _observation_data.row(_cnt_plot) = _observation;
@@ -451,6 +472,8 @@ void RLController::update(const ros::Time& /*time*/, const ros::Duration& period
       //   _drpy_out << 0, 0, 0;
       //   _cnt_step = 0;
       // }
+      // cout<<"|"<<_cnt_step;
+      // cout<<_qdot.transpose()<<endl;
       _cnt_step += 1;
       _drpy_plot.row(_cnt_idx) = _drpy_out;
 
@@ -460,11 +483,13 @@ void RLController::update(const ros::Time& /*time*/, const ros::Duration& period
       // cout << "drpy out : " << _drpy_out.transpose() << endl;
       _R_des_hand =
           CustomMath::GetBodyRotationMatrix(_x_des_hand(3), _x_des_hand(4), _x_des_hand(5));
-      _Rdot_des_hand = CustomMath::GetBodyRotationMatrix(_xdot_des_hand(3), _xdot_des_hand(4),
-                                                         _xdot_des_hand(5));
+      // _Rdot_des_hand = CustomMath::GetBodyRotationMatrix(_xdot_des_hand(3), _xdot_des_hand(4),
+      //                                                    _xdot_des_hand(5));
+      _Rdot_des_hand = CustomMath::GetBodyRotationMatrix(0, 0, 0);
 
-      // _torque_des = OperationalSpaceControl();
-      _torque_des = CLIK();
+      
+      _torque_des = OperationalSpaceControl();
+      // _torque_des = CLIK();
       _cnt_idx += 1;
 
       VectorXd torque(7);
@@ -472,13 +497,13 @@ void RLController::update(const ros::Time& /*time*/, const ros::Duration& period
       for (int i = 0; i < 7; ++i) {
         torque(i) = _torque_des[i];
       }
-      _torque_plot.row(_cnt_idx) = torque;
-      _q_plot.row(_cnt_plot) = _q;
-      _qdot_plot.row(_cnt_plot) = _qdot;
-      _x_plot.row(_cnt_plot) = _x_hand;
-      _xdot_plot.row(_cnt_plot) = _xdot_hand;
-      _drpy_plot.row(_cnt_plot) = _drpy_out;
-      _cnt_plot += 1;
+      // _torque_plot.row(_cnt_idx) = torque;
+      // _q_plot.row(_cnt_plot) = _q;
+      // _qdot_plot.row(_cnt_plot) = _qdot;
+      // _x_plot.row(_cnt_plot) = _x_hand;
+      // _xdot_plot.row(_cnt_plot) = _xdot_hand;
+      // _drpy_plot.row(_cnt_plot) = _drpy_out;
+      // _cnt_plot += 1;
       if (CircularTrajectory.check_trajectory_complete() == 1) {
         _cnt_plan += 1;
         _bool_plan[_cnt_plan] = true;
@@ -522,6 +547,7 @@ void RLController::update(const ros::Time& /*time*/, const ros::Duration& period
       printf("gripper stop\n");
     }
 
+    // cout<<target.state<< " ";
     for (size_t i = 0; i < 7; ++i) {
       effort_handles_[i].setCommand(_torque_des[i]);
       // effort_handles_[i].setCommand(0.0);
@@ -536,37 +562,37 @@ void RLController::update(const ros::Time& /*time*/, const ros::Duration& period
     }
 
     if (_cnt_plot != 0) {
-      printf("save csv\n");
+      // printf("save csv\n");
       std::string filename;
-      filename = "q.csv";
-      writeToCSVfile(filename, _q_plot, _cnt_plot);
+      // filename = "q.csv";
+      // writeToCSVfile(filename, _q_plot, _cnt_plot);
 
-      filename = "qdot.csv";
-      writeToCSVfile(filename, _qdot_plot, _cnt_plot);
+      // filename = "qdot.csv";
+      // writeToCSVfile(filename, _qdot_plot, _cnt_plot);
 
-      // filename = "osc_obs.csv";
-      // writeToCSVfile(filename, _observation_data,_cnt_plot);
+      // // filename = "osc_obs.csv";
+      // // writeToCSVfile(filename, _observation_data,_cnt_plot);
 
-      filename = "hand.csv";
-      writeToCSVfile(filename, _x_plot, _cnt_plot);
+      // filename = "hand.csv";
+      // writeToCSVfile(filename, _x_plot, _cnt_plot);
 
-      filename = "drpy.csv";
+      filename = "drpy_control.csv";
       writeToCSVfile(filename, _drpy_plot, _cnt_idx);
 
-      filename = "handdot.csv";
-      writeToCSVfile(filename, _xdot_plot,_cnt_idx);
+      // filename = "handdot.csv";
+      // writeToCSVfile(filename, _xdot_plot,_cnt_idx);
 
       // filename = "clik_q.csv";
       // writeToCSVfile(filename, _q_plot,_cnt_plot);
 
-      // filename = "clik_qdot.csv";
-      // writeToCSVfile(filename, _qdot_plot,_cnt_plot);
+      filename = "obs_rpy.csv";
+      writeToCSVfile(filename, _rpy_data,_cnt_plot);
 
-      // filename = "clik_obs.csv";
-      // writeToCSVfile(filename, _observation_data,_cnt_plot);
+      filename = "obs.csv";
+      writeToCSVfile(filename, _observation_data,_cnt_plot);
 
-      // filename = "clik_drpy.csv";
-      // writeToCSVfile(filename, _action_data,_cnt_plot);
+      filename = "action.csv";
+      writeToCSVfile(filename, _action_data,_cnt_plot);
 
       // filename = "clik_drpy.csv";
       // writeToCSVfile(filename, _drpy_plot,_cnt_idx);
@@ -822,71 +848,60 @@ void RLController::UpdateStates() {
   } else {
     _motion_done = true;
   }
-  ZMQ();
+  // ZMQ();
 }
 
 void RLController::Observation() {
-  MatrixXd R_plan_hand(3, 3);
-  R_plan_hand = CustomMath::GetBodyRotationMatrix(_rpy_plan(0), _rpy_plan(1), _rpy_plan(2));
   for (size_t i = 0; i < 7; ++i) {
     _q_normalize(i) =
-        (_q(i) - _q_normalize_min(i)) / (_q_normalize_max(i) - _q_normalize_min(i)) * (1 - (-1)) -
-        1;
+        (_q(i) - _q_normalize_min(i)) / (_q_normalize_max(i) - _q_normalize_min(i)) * (1 - (-1)) - 1;
   }
   Matrix3d Tge, R_hand;
-  Tge << cos(M_PI_4), -sin(M_PI_4), 0, sin(M_PI_4), cos(M_PI_4), 0, 0, 0, 1;
-  R_hand << _R_hand * Tge;
-  R_plan_hand << R_plan_hand * Tge;
-
+  // Tge << cos(), -sin(M_PI_4), 0, sin(M_PI_4), cos(M_PI_4), 0, 0, 0, 1;
+  // R_hand << _R_hand * Tge;
+  
   if (_observation.isZero()) {
     // _obs_rpy.head(6) << R_hand(0, 0), R_hand(0, 1), R_hand(0, 2), R_hand(1, 0), R_hand(1, 1),
     //     R_hand(1, 2);
     // _obs_rpyplan.head(6) << R_plan_hand(0, 0), R_plan_hand(0,1), R_plan_hand( 0,2),
     //     R_plan_hand(1,0), R_plan_hand(1, 1), R_plan_hand(1,2);
 
-    _obs_rpy.head(6) << R_hand(0, 0), R_hand(1, 0), R_hand(2, 0), R_hand(0, 1), R_hand(1, 1),
-        R_hand(2, 1);
-    _obs_rpyplan.head(6) << R_plan_hand(0, 0), R_plan_hand(1, 0), R_plan_hand(2, 0),
-        R_plan_hand(0, 1), R_plan_hand(1, 1), R_plan_hand(2, 1);
+    // _obs_rpy.head(6) << R_hand(0, 0), R_hand(1, 0), R_hand(2, 0), R_hand(0, 1), R_hand(1, 1),
+    //     R_hand(2, 1);
 
-    _obs_posplan.head(3) << _x_des_hand.head(3);
+    _obs_rpy.head(6) << _R_hand(0, 0), _R_hand(1, 0), _R_hand(2, 0), _R_hand(0, 1), _R_hand(1, 1),
+        _R_hand(2, 1);
     _obs_pos.head(3) << _x_hand.head(3);
     _obs_q.head(7) << _q_normalize;
+    _obs_drot.tail(6) << _Rdot_hand(0, 0), _Rdot_hand(1, 0), _Rdot_hand(2, 0), _Rdot_hand(0, 1), _Rdot_hand(1, 1),
+        _Rdot_hand(2, 1);
     for (size_t i = 1; i < _stack; i++) {
       _obs_rpy.segment<6>(6 * i) << _obs_rpy.head(6);
-      _obs_rpyplan.segment<6>(6 * i) << _obs_rpyplan.head(6);
-      _obs_posplan.segment<3>(3 * i) << _obs_posplan.head(3);
       _obs_pos.segment<3>(3 * i) << _obs_pos.head(3);
       _obs_q.segment<7>(7 * i) << _obs_q.head(7);
     }
+
   } else {
     VectorXd q_tmp((_stack - 1) * 7);
     q_tmp = _obs_q.head((_stack - 1) * 7);
     VectorXd rpy_tmp((_stack - 1) * 6);
     rpy_tmp = _obs_rpy.head((_stack - 1) * 6);
-    VectorXd rpyplan_tmp((_stack - 1) * 6);
-    rpyplan_tmp = _obs_rpyplan.head((_stack - 1) * 6);
-    VectorXd posplan_tmp((_stack - 1) * 3);
-    posplan_tmp = _obs_posplan.head((_stack - 1) * 3);
     VectorXd pos_tmp((_stack - 1) * 3);
     pos_tmp = _obs_pos.head((_stack - 1) * 3);
 
     _obs_q.tail((_stack - 1) * 7) = q_tmp;
     _obs_rpy.tail((_stack - 1) * 6) = rpy_tmp;
-    _obs_rpyplan.tail((_stack - 1) * 6) = rpyplan_tmp;
-    _obs_posplan.tail((_stack - 1) * 3) = posplan_tmp;
     _obs_pos.tail((_stack - 1) * 3) = pos_tmp;
+    _obs_drot.tail(6) << _Rdot_hand(0, 0), _Rdot_hand(1, 0), _Rdot_hand(2, 0), _Rdot_hand(0, 1), _Rdot_hand(1, 1),
+        _Rdot_hand(2, 1);
 
-    _obs_rpy.head(6) << R_hand(0, 0), R_hand(1, 0), R_hand(2, 0), R_hand(0, 1), R_hand(1, 1),
-        R_hand(2, 1);
-    _obs_rpyplan.head(6) << R_plan_hand(0, 0), R_plan_hand(1, 0), R_plan_hand(2, 0),
-        R_plan_hand(0, 1), R_plan_hand(1, 1), R_plan_hand(2, 1);
-    _obs_posplan.head(3) << _x_des_hand.head(3);
+    _obs_rpy.head(6) << _R_hand(0, 0), _R_hand(1, 0), _R_hand(2, 0), _R_hand(0, 1), _R_hand(1, 1),
+        _R_hand(2, 1);
     _obs_pos.head(3) << _x_hand.head(3);
     _obs_q.head(7) << _q_normalize;
   }
 
-  _observation << _obs_obj, _obs_q, _obs_rpy, _obs_rpyplan, _obs_posplan, _obs_pos;
+  _observation << _obs_obj,_obs_drot, _obs_q, _obs_rpy, _obs_pos;
 }
 
 void RLController::ZMQ_receive() {
@@ -958,7 +973,8 @@ array<double, 7> RLController::OperationalSpaceControl() {
   x_err_hand.segment(3, 3) = -CustomMath::getPhi(_R_hand, _R_des_hand);
 
   xdot_err_hand.segment(0, 3) = _xdot_des_hand.head(3) - _xdot_hand.head(3);
-  xdot_err_hand.segment(3, 3) = -CustomMath::getPhi(_Rdot_hand, _Rdot_des_hand);
+  // xdot_err_hand.segment(3, 3) = -CustomMath::getPhi(_Rdot_hand, _Rdot_des_hand);
+  xdot_err_hand.segment(3, 3) = -_xdot_hand.tail(3);
 
   // force = k_gains_ * x_err_hand + d_gains_ * xdot_err_hand;
 

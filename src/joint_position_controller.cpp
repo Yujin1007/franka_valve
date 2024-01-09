@@ -164,20 +164,20 @@ void JointPositionController::ZMQ_receive() {
     for (size_t i=0;i<7;++i){
       _q_mppi(i) = Buffer_Robot[i];
       _qdot_mppi(i) = Buffer_Robot[i+7];
-      // cout<<Buffer_Robot[i]<<endl;
+      // cout<<Buffer_Robot[i];
       // cout<<Buffer_Robot[i+7]<<endl<<endl;
     }
-    for(int i = 0;i<14; i++)
-    {
-      cout<<Buffer_Robot[i]<<" , " <<endl;
-    }
+    // for(int i = 0;i<14; i++)
+    // {
+    //   // cout<<Buffer_Robot[i]<<" , " <<endl;
+    // }
 
     _q_delta = _q_mppi - _old_q_mppi;
     _q_delta = _q_delta / 4;
     _qdot_delta = _qdot_mppi - _old_qdot_mppi;
     _qdot_delta = _qdot_delta / 4;
     
-    cout<<"_time          : "<<_time<<endl;
+    // cout<<"_time          : "<<_time<<endl;
     // cout<<"_q_mppi        : "<<_q_mppi.transpose()<<endl;
     // cout<<"_old_q_mppi    : "<<_old_q_mppi.transpose()<<endl;
     // cout<<"_qdot_mppi     : "<<_qdot_mppi.transpose()<<endl;
@@ -338,9 +338,9 @@ void JointPositionController::update(const ros::Time& /*time*/, const ros::Durat
 
     for (size_t i = 0; i < 7; ++i) {
 
-      // effort_handles_[i].setCommand(_torque_des(i));
+      effort_handles_[i].setCommand(_torque_des(i));
       // array<double, 7> coriolis_array = model_handle_->getCoriolis();
-      effort_handles_[i].setCommand(0.0);
+      // effort_handles_[i].setCommand(0.0);
     }
 
     _cnt_recv += 1;

@@ -14,6 +14,12 @@
 #include <franka_gripper/GraspAction.h>
 #include <franka_gripper/HomingAction.h>
 #include <franka_gripper/MoveAction.h>
+#include <franka_gripper/StopAction.h>
+
+#define GRIPPER_OPEN 1
+#define GRIPPER_CLOSE 0
+#define GRIPPER_STOP -1
+
 
 namespace franka_valve {
 
@@ -138,17 +144,23 @@ void HeuristicMotionController::starting(const ros::Time& /* time */) {
 
   gripper_close = false;
   gripper_open = false;
+  gripper_home = false;
+  gripper_stop = false;
 
   _elapsed_time_ = ros::Duration(0.0);
   _t = _elapsed_time_.toSec();
   _printtime = 0.0;
   _timeinterval = 0.1;
 
+  _operation_time = ros::Time::now();
+
   // Initial setting / calculate hand trajectory in advance
-  _init_theta = 3.14*1.5;
-  _goal_theta = 3.14*0.5;
+  _init_theta = M_PI * -0.5;
+  _goal_theta = M_PI * 0;
   _bool_plan.fill(false);
   _cnt_plan = 0;
+  _cnt = 0;
+  _accum_time = 0;
   _bool_plan[_cnt_plan] = true;
 
   _q.setZero(7);
@@ -178,17 +190,48 @@ void HeuristicMotionController::starting(const ros::Time& /* time */) {
 
   _robot.pos << 0, 0, 0;
   _robot.zrot = 0;      // M_PI;
-  _robot.ee_align = 0;// DEG2RAD * (-90);
+  // _robot.ee_align = 0;  // DEG2RAD * (-90);
+  _robot.ee_align = DEG2RAD * (45);
+  // Matrix3d rot_obj(3, 3);
+  // // rot_obj << 0, -1, 0, 1, 0, 0, 0, 0, 1;
+  // rot_obj << 1, 0, 0, 0, 1, 0, 0, 0, 1;
+  // _obj.name = "HANDLE_VALVE";
+  // // _obj.o_margin << 0, 0.149, 0;
+  // _obj.o_margin << 0, 0, 0.149;
+  // _obj.o_margin = rot_obj * _obj.o_margin;
+  // _obj.r_margin << -0.12, 0, 0;  // East side of the origin
+  // _obj.r_margin = rot_obj * _obj.r_margin;
+  // _obj.grab_dir << _obj.o_margin.cross(_obj.r_margin);  //_obj.r_margin;  //
+  // // _obj.pos << 0.60, 0.0, 0.2;
+  // _obj.pos << 0.580994101778967, -0.045675755104744684, 0.115;
 
   Matrix3d rot_obj(3, 3);
-  rot_obj << 0, -1, 0, 1, 0, 0, 0, 0, 1;
+  // rot_obj << 0, -1, 0, 1, 0, 0, 0, 0, 1;
+
+  rot_obj << 1, 0, 0, 
+             0, 0, -1,
+             0, 1, 0;
+  // rot_obj << 0.226, -0.051,-0.973,
+  //           -0.941, -0.268, -0.205,
+  //           -0.25,   0.962, -0.109;
+//  rot_obj << 0, -1, 0,
+//             -1, 0, 0,
+//             0, 0, -1;
   _obj.name = "HANDLE_VALVE";
-  _obj.o_margin << 0, 0.149, 0;
+  // _obj.o_margin << 0, 0.149, 0;
+  // _obj.o_margin << 0, 0, 0.143;
+  // _obj.r_margin << -0.12, 0, 0;  // East side of the origin
+  _obj.o_margin << 0, 0.143, 0 ;
+  _obj.r_margin << 0.12, 0, 0;  // East side of the origin
   _obj.o_margin = rot_obj * _obj.o_margin;
-  _obj.r_margin << 0.119, 0, 0;  // East side of the origin
   _obj.r_margin = rot_obj * _obj.r_margin;
-  _obj.grab_dir << _obj.o_margin.cross(_obj.r_margin);//_obj.r_margin;  // 
-  _obj.pos << 0.50, 0.0, 0.9;
+  _obj.grab_dir << _obj.o_margin.cross(_obj.r_margin);  //_obj.r_margin;  //
+  // _obj.pos << 0.60, 0.0, 0.2;
+  // _obj.pos << 0.55, 0.0, 0.75;
+  _obj.pos << 0.44296161, -0.2819804 ,  0.00434591;
+
+
+
   // obj.pos << 0.44296161, -0.2819804 ,  0.00434591;
   _gripper_close = 0.01;  // 0.01;
   _gripper_open = 0.04;
@@ -230,17 +273,39 @@ void HeuristicMotionController::update(const ros::Time& /*time*/, const ros::Dur
   _t = _elapsed_time_.toSec();
   _dt = period.toSec();
   // Get Franka's model information
-
-  // transform useful robot states into Eigen format (_q,_qdot,_x_hand, _xdot_hand, rot.. )
+  ros::Duration execution_time = ros::Time::now() - _operation_time;
+  // ROS_INFO("%f seconds.", execution_time.toSec());
+  _operation_time = ros::Time::now();
+  _accum_time += execution_time.toSec();
+  _cnt += 1;
 
   UpdateStates();
   if (!_motion_done) {
     Target target = _target_plan[_cnt_plan];
     if (_bool_plan[_cnt_plan] && !target.state.empty()) {
       MotionPlan(target);
-      gripper_open = target.gripper;
-      gripper_close = !target.gripper;
+      switch (target.gripper)
+      {
+      case 1:
+        gripper_open = true;
+        gripper_close = false;
+        gripper_stop = false;
+        break;
+      case 0:
+        gripper_close = true;
+        gripper_open = false;
+        gripper_stop = false;
+        break;
+      case -1:
+        gripper_stop = true;
+        gripper_close = false;
+        gripper_open = false;
+        break;      
+      default:
+        break;
+      }
     }
+    
     int joint_done = 0;
     int hand_done = 0;
     int valve_done = 0;
@@ -257,10 +322,14 @@ void HeuristicMotionController::update(const ros::Time& /*time*/, const ros::Dur
         joint_done = 1;
         printf("target %d is over, move to next target %d\n", _cnt_plan - 1, _cnt_plan);
         printf("It was joint impedance control.\n");
+        cout << "gripper :" << target.gripper << endl;
         cout << "x_hand :" << _x_hand.transpose() << endl;
         cout << "d_hand :" << _x_des_hand.transpose() << endl;
         cout << "error  :" << (_x_des_hand - _x_hand).transpose() << endl;
-        cout << "q : " << _q.transpose() << endl << endl;
+        cout << "q : " << _q.transpose() << endl ;
+        cout << "avg time : " << _accum_time / _cnt << endl<<endl;
+        _accum_time = 0.0;
+        _cnt = 0;
       }
     } else if (target.state == "nearvalve") {
       HandTrajectory.update_time(_t);
@@ -279,10 +348,14 @@ void HeuristicMotionController::update(const ros::Time& /*time*/, const ros::Dur
         hand_done = 1;
         printf("target %d is over, move to next target %d\n", _cnt_plan - 1, _cnt_plan);
         printf("It was operational space control.\n");
+        cout << "gripper :" << target.gripper << endl;
         cout << "x_hand :" << _x_hand.transpose() << endl;
         cout << "d_hand :" << _x_des_hand.transpose() << endl;
         cout << "error  :" << (_x_des_hand - _x_hand).transpose() << endl;
-        cout << "q : " << _q.transpose() << endl << endl;
+        cout << "q : " << _q.transpose() << endl;
+        cout << "avg time : " << _accum_time / _cnt << endl<<endl;
+        _accum_time = 0.0;
+        _cnt = 0;
       }
 
     } else if (target.state == "onvalve") {
@@ -297,15 +370,15 @@ void HeuristicMotionController::update(const ros::Time& /*time*/, const ros::Dur
       _torque_des = OperationalSpaceControl();
 
       if ((_t - _printtime > _timeinterval) && !_motion_done) {
-    _printtime = _t;
+        _printtime = _t;
+        _qdes_plot.row(_cnt_plot) = _q_des;
+        _q_plot.row(_cnt_plot) = _q;
+        _xdes_plot.row(_cnt_plot) = _x_des_hand;
+        _x_plot.row(_cnt_plot) = _x_hand;
+        _cnt_plot += 1;
 
-    _qdes_plot.row(_cnt_plot) = _q_des;
-    _q_plot.row(_cnt_plot) = _q;
-    _xdes_plot.row(_cnt_plot) = _x_des_hand;
-    _x_plot.row(_cnt_plot) = _x_hand;
-
-    _cnt_plot += 1;
-  }
+        
+      }
       // GripperControl();
       if (CircularTrajectory.check_trajectory_complete() == 1) {
         _cnt_plan += 1;
@@ -313,25 +386,44 @@ void HeuristicMotionController::update(const ros::Time& /*time*/, const ros::Dur
         valve_done = 1;
         printf("Valve trajectory over");
         printf("target %d is over, move to next target %d\n", _cnt_plan - 1, _cnt_plan);
+        cout << "gripper :" << target.gripper << endl;
+        cout << "avg time : " << _accum_time / _cnt << endl;
+        _accum_time = 0.0;
+        _cnt = 0;
+
+        // gripper_stop = true;
+        // gripper_close = false;
+        // gripper_open = false;
       }
     }
 
     // Gripper
     if (gripper_close) {
-      epsilon.inner = 0.05;  // 0.005;
-      epsilon.outer = 0.05;  // 0.005;
+      epsilon.inner = 0.005;  // 0.005;
+      epsilon.outer = 0.005;  // 0.005;
       close_goal.speed = 0.1;
-      close_goal.width = 0.005;  // 0.003;
-      close_goal.force = 100.0;
+      close_goal.width = 0.025;  // 0.003;
+      close_goal.force = 300.0;
       close_goal.epsilon = epsilon;
       gripper_ac_close.sendGoal(close_goal);
       gripper_close = false;
+
+      printf("gripper close\n");
     }
     if (gripper_open) {
       open_goal.speed = 0.1;
       open_goal.width = 0.08;
       gripper_ac_open.sendGoal(open_goal);
       gripper_open = false;
+
+      printf("gripper open\n");
+    }
+
+    if (gripper_stop) {
+      gripper_ac_stop.sendGoal(stop_goal);
+      gripper_stop = false;
+
+      printf("gripper stop\n");
     }
 
     for (size_t i = 0; i < 7; ++i) {
@@ -342,8 +434,10 @@ void HeuristicMotionController::update(const ros::Time& /*time*/, const ros::Dur
     for (size_t i = 0; i < 7; ++i) {
       effort_handles_[i].setCommand(coriolis_array[i]);
     }
-
+    
   }
+  // cout<<_torque_des[6]<<","<<_qdot(6)<<" |";
+  // cout<<(_x_hand.tail(3) - _x_des_hand.tail(3)).transpose()<<endl;
 }
 
 void HeuristicMotionController::writeToCSVfile(string filename,
@@ -368,7 +462,6 @@ void HeuristicMotionController::writeToCSVfile(string filename,
       outputFile << ",";
       outputFile << q(i, j);
       outputFile << ",";
-    
     }
     for (Eigen::Index j = 0; j < 6; ++j) {
       outputFile << xd(i, j);
@@ -385,6 +478,30 @@ void HeuristicMotionController::writeToCSVfile(string filename,
   outputFile.close();
 }
 
+void HeuristicMotionController::writeToCSVfile(string filename, MatrixXd input_matrix, int cnt) {
+  // Open the file for writing
+  string path = "/home/kist/catkin_ws/src/franka_ros/franka_valve/data/";
+  path = path + filename;
+  std::ofstream outputFile(path);
+
+  if (!outputFile.is_open()) {
+    std::cerr << "Error opening file " << filename << std::endl;
+  }
+  // outputFile << "qd1,q1,qd2,q2,qd3,q3,qd4,q4,qd5,q5,qd6,q6,qd7,q7,xd,x,yd,y,zd,z,rd,r,pd,p,yd,y"
+  //            << endl;
+  // Write the matrix data to the CSV file
+  int len = input_matrix.cols();
+  for (Eigen::Index i = 0; i < cnt; ++i) {
+    for (Eigen::Index j = 0; j < len; ++j) {
+      outputFile << input_matrix(i, j);
+      outputFile << ",";
+    }
+    outputFile << "\n";  // Move to the next row
+  }
+  outputFile.close();
+}
+
+
 void HeuristicMotionController::gripperCloseCallback(const std_msgs::Bool& msg) {
   gripper_close = msg.data;
   gripper_open = false;
@@ -392,6 +509,12 @@ void HeuristicMotionController::gripperCloseCallback(const std_msgs::Bool& msg) 
 
 void HeuristicMotionController::gripperOpenCallback(const std_msgs::Bool& msg) {
   gripper_open = msg.data;
+  gripper_close = false;
+}
+
+void HeuristicMotionController::gripperStopCallback(const std_msgs::Bool& msg) {
+  gripper_stop = msg.data;
+  gripper_open = false;
   gripper_close = false;
 }
 
@@ -416,99 +539,108 @@ void HeuristicMotionController::InitMotionPlan(double init_theta, double goal_th
 
   Target home;
   home.state = "home";
-  home.q_goal= {0, -0.785398163397, 0, -2.35619449019, 0, 1.57079632679, 0.785398163397};
+  home.q_goal = {0, -0.785398163397, 0, -2.35619449019, 0, 1.57079632679, 0.785398163397};
   _target_plan.push_back(home);
-  _target_plan.back().gripper = true;  //_gripper_open;
-  _target_plan.back().time = 2.0;
+  _target_plan.back().gripper = GRIPPER_OPEN;  //_gripper_open;
+  _target_plan.back().time = 3.0;
 
+  // home.state = "home";
+  // home.q_goal = {-0.41484960773835194, -0.44115319320251756, -0.7363579469470805,
+  //                -2.154384388830415,   1.320605343951786,    2.743993646073484,
+  //                0.1233151368455181};
+  // _target_plan.push_back(home);
+  // _target_plan.back().gripper = true;  //_gripper_open;
+  // _target_plan.back().time = 4.0;
 
-  // home.q_goal= {0.191271,	-0.635661,	-0.0793275,	-1.56326,	-0.220111,	2.48983,	-0.659214};
+  // _target_plan.push_back(home);
+  // _target_plan.back().gripper = false;  //_gripper_open;
+  // _target_plan.back().time = .5;
+
+  // home.q_goal= {0, -0.785398163397, 0, -2.35619449019, 0, 1.57079632679, -0.785398163397};
+  // _target_plan.push_back(home);
+  // _target_plan.back().gripper = false;  //_gripper_open;
+  // _target_plan.back().time = 3.0;
+
+  // home.q_goal= {0, -0.785398163397, 0, -2.35619449019, 0, 1.57079632679, 0.785398163397};
   // _target_plan.push_back(home);
   // _target_plan.back().gripper = true;  //_gripper_open;
   // _target_plan.back().time = 3.0;
 
-
-  // home.q_goal= {0.191271,	-0.635661,	-0.0793275,	-1.56326,	-0.220111,	2.48983,	-0.659214};
-  // _target_plan.push_back(home);
-  // _target_plan.back().gripper = true;  //_gripper_open;
-  // _target_plan.back().time = 2.0;
-
-
-
-
-
-
   Objects obj_above = _obj;
   obj_above.o_margin = obj_above.o_margin + obj_above.o_margin.normalized() * 0.05;
   _target_plan.push_back(TargetTransformMatrix(obj_above, _robot, init_theta));
-  _target_plan.back().gripper = false;  //_gripper_open;
+  _target_plan.back().gripper = GRIPPER_OPEN;  //_gripper_open;
   _target_plan.back().time = 3.0;
   _target_plan.back().state = "nearvalve";
-  cout << "target 1:" << _target_plan.back().x << "," << _target_plan.back().y << ","
+  // cout << "target 1:" << _target_plan.back().x << "," << _target_plan.back().y << ","
+  //      << _target_plan.back().z << "," << _target_plan.back().roll << ","
+  //      << _target_plan.back().pitch << "," << _target_plan.back().yaw << endl;
+
+  //   home.q_goal= {0.494944119493464	,-0.66641803734311	,-0.198208637809038
+  //   ,-1.56143086756172	,-0.594790363598726	,2.44989280739555,	-0.409190275114552};
+  // _target_plan.push_back(home);
+  // _target_plan.back().gripper = false;  //_gripper_open;
+  // _target_plan.back().time = 2.0;
+
+  // home.q_goal= {0.494944119493464	,-0.66641803734311	,-0.198208637809038
+  // ,-1.56143086756172	,-0.594790363598726	,2.44989280739555,	-0.409190275114552};
+  // _target_plan.push_back(home);
+  // _target_plan.back().gripper = false;  //_gripper_open;
+  // _target_plan.back().time = 2.0;
+
+  _target_plan.push_back(TargetTransformMatrix(_obj, _robot, init_theta));
+  _target_plan.back().gripper = GRIPPER_OPEN;  //_gripper_open;
+  _target_plan.back().time = 1.0;
+  _target_plan.back().state = "nearvalve";
+  cout << "target 2:" << _target_plan.back().x << "," << _target_plan.back().y << ","
        << _target_plan.back().z << "," << _target_plan.back().roll << ","
        << _target_plan.back().pitch << "," << _target_plan.back().yaw << endl;
 
-    home.q_goal= {0.494944119493464	,-0.66641803734311	,-0.198208637809038	,-1.56143086756172	,-0.594790363598726	,2.44989280739555,	-0.409190275114552};
-  _target_plan.push_back(home);
-  _target_plan.back().gripper = true;  //_gripper_open;
-  _target_plan.back().time = 2.0;
+  _target_plan.push_back(TargetTransformMatrix(_obj, _robot, init_theta));
+  _target_plan.back().gripper = GRIPPER_CLOSE;  //_gripper_close;
+  _target_plan.back().time = 1.0;
+  _target_plan.back().state = "nearvalve";
+  cout << "target 3:" << _target_plan.back().x << "," << _target_plan.back().y << ","
+       << _target_plan.back().z << "," << _target_plan.back().roll << ","
+       << _target_plan.back().pitch << "," << _target_plan.back().yaw << endl;
 
-  home.q_goal= {0.494944119493464	,-0.66641803734311	,-0.198208637809038	,-1.56143086756172	,-0.594790363598726	,2.44989280739555,	-0.409190275114552};
-  _target_plan.push_back(home);
-  _target_plan.back().gripper = true;  //_gripper_open;
-  _target_plan.back().time = 2.0;
+  _target_plan.push_back(onvalve);
+  _target_plan.back().gripper = GRIPPER_CLOSE;  //_gripper_close;
+  motion_time = abs(motion_time_const * abs(goal_theta - init_theta) * _obj.r_margin.norm());
+  _target_plan.back().time = motion_time;
+  // _target_plan.back().gripper = _gripper_close;
+  cout << "target 4:" << _target_plan.back().x << "," << _target_plan.back().y << ","
+       << _target_plan.back().z << "," << _target_plan.back().roll << ","
+       << _target_plan.back().pitch << "," << _target_plan.back().yaw << endl;
 
-  // _target_plan.push_back(TargetTransformMatrix(_obj, _robot, init_theta));
-  // _target_plan.back().gripper = true;  //_gripper_open;
-  // _target_plan.back().time = 1.0;
-  // _target_plan.back().state = "nearvalve";
-  // cout << "target 2:" << _target_plan.back().x << "," << _target_plan.back().y << ","
-  //      << _target_plan.back().z << "," << _target_plan.back().roll << ","
-  //      << _target_plan.back().pitch << "," << _target_plan.back().yaw << endl;
+ _target_plan.push_back(TargetTransformMatrix(_obj, _robot, goal_theta));
+  _target_plan.back().gripper = GRIPPER_STOP;  // _gripper_open;
+  _target_plan.back().time = 1.0;
+  _target_plan.back().state = "nearvalve";
 
-  // _target_plan.push_back(TargetTransformMatrix(_obj, _robot, init_theta));
-  // _target_plan.back().gripper = false;  //_gripper_close;
-  // _target_plan.back().time = 0.5;
-  // _target_plan.back().state = "nearvalve";
-  // cout << "target 3:" << _target_plan.back().x << "," << _target_plan.back().y << ","
-  //      << _target_plan.back().z << "," << _target_plan.back().roll << ","
-  //      << _target_plan.back().pitch << "," << _target_plan.back().yaw << endl;
-
-    _target_plan.push_back(onvalve);
-  _target_plan.back().gripper = false;//_gripper_close;
-    motion_time = abs(motion_time_const * abs(goal_theta - init_theta) * _obj.r_margin.norm());
-    _target_plan.back().time = motion_time;
-    _target_plan.back().gripper = _gripper_close;
-    cout << "target 4:" << _target_plan.back().x << "," << _target_plan.back().y << ","
-         << _target_plan.back().z << ","<< _target_plan.back().roll << "," <<
-         _target_plan.back().pitch << ","
-         << _target_plan.back().yaw << endl;
-
-    _target_plan.push_back(TargetTransformMatrix(_obj, _robot, goal_theta));
-    _target_plan.back().gripper = false;// _gripper_open;
-    _target_plan.back().time = .5;
-    _target_plan.back().state = "nearvalve";
-    cout << "target 5:" << _target_plan.back().x << "," << _target_plan.back().y << ","
-         << _target_plan.back().z << ","<< _target_plan.back().roll << "," <<
-         _target_plan.back().pitch << ","
-         << _target_plan.back().yaw << endl;
-
-    _target_plan.push_back(TargetTransformMatrix(obj_above, _robot, goal_theta));
-    _target_plan.back().gripper =true;// _gripper_open;
-    _target_plan.back().time = 1.0;
-    _target_plan.back().state = "nearvalve";
-    cout << "target 6:" << _target_plan.back().x << "," << _target_plan.back().y << ","
-         << _target_plan.back().z<< "," << _target_plan.back().roll << "," <<
-         _target_plan.back().pitch << ","
-         << _target_plan.back().yaw << endl;
-
-  _target_plan.push_back(home);
-  _target_plan.back().gripper = true;//_gripper_open;
-  home.q_goal= {0, -0.785398163397, 0, -2.35619449019, 0, 1.57079632679, 0.785398163397};
+  _target_plan.push_back(TargetTransformMatrix(_obj, _robot, goal_theta));
+  _target_plan.back().gripper = GRIPPER_OPEN;  // _gripper_open;
+  _target_plan.back().time = 1.0;
+  _target_plan.back().state = "nearvalve";
+  cout << "target 5:" << _target_plan.back().x << "," << _target_plan.back().y << ","
+       << _target_plan.back().z << "," << _target_plan.back().roll << ","
+       << _target_plan.back().pitch << "," << _target_plan.back().yaw << endl;
   
+  
+
+  _target_plan.push_back(TargetTransformMatrix(obj_above, _robot, goal_theta));
+  _target_plan.back().gripper = GRIPPER_OPEN;  // _gripper_open;
+  _target_plan.back().time = 1.0;
+  _target_plan.back().state = "nearvalve";
+  cout << "target 6:" << _target_plan.back().x << "," << _target_plan.back().y << ","
+       << _target_plan.back().z << "," << _target_plan.back().roll << ","
+       << _target_plan.back().pitch << "," << _target_plan.back().yaw << endl;
+
+  _target_plan.push_back(home);
+  _target_plan.back().gripper = GRIPPER_OPEN;  //_gripper_open;
+  home.q_goal = {0, -0.785398163397, 0, -2.35619449019, 0, 1.57079632679, 0.785398163397};
+
   _target_plan.back().time = 3.0;
-
-
 }
 
 void HeuristicMotionController::MotionPlan(Target target) {
@@ -519,7 +651,8 @@ void HeuristicMotionController::MotionPlan(Target target) {
   if (target.state == "home") {
     VectorXd q_goal(7), qdot_goal(7);
 
-    q_goal << target.q_goal[0],target.q_goal[1],target.q_goal[2],target.q_goal[3],target.q_goal[4],target.q_goal[5],target.q_goal[6];
+    q_goal << target.q_goal[0], target.q_goal[1], target.q_goal[2], target.q_goal[3],
+        target.q_goal[4], target.q_goal[5], target.q_goal[6];
     qdot_goal.setZero();
 
     JointTrajectory.reset_initial(start_time, _q, _qdot);
@@ -559,9 +692,9 @@ void HeuristicMotionController::UpdateStates() {
   _J_hands = Map<const Matrix<double, 6, 7>>(jacobian_array.data());
   _mass = Map<const Matrix<double, 7, 7>>(mass_array.data());
   _coriolis = Map<const Matrix<double, 7, 1>>(coriolis_array.data());
-  vector<double> armateur = { 0.5, 0.5,  0.3,  0.3,  0.3,  0.3,  0.2,  0.12};
-  for (size_t i=0;i<7;++i){
-    _mass(i,i) += armateur[i];
+  vector<double> armateur = {0.5, 0.5, 0.3, 0.3, 0.3, 0.3, 0.2, 0.12};
+  for (size_t i = 0; i < 7; ++i) {
+    _mass(i, i) += armateur[i];
   }
 
   Eigen::Map<const Eigen::Matrix<double, 7, 1>> q_map(robot_state_.q.data());
@@ -607,10 +740,10 @@ array<double, 7> HeuristicMotionController::OperationalSpaceControl() {
 
   x_err_hand.segment(0, 3) = _x_des_hand.head(3) - _x_hand.head(3);
   x_err_hand.segment(3, 3) = -CustomMath::getPhi(_R_hand, _R_des_hand);
-
+  cout<<"error :"<<x_err_hand.tail(3).transpose()<<endl;
   xdot_err_hand.segment(0, 3) = _xdot_des_hand.head(3) - _xdot_hand.head(3);
   xdot_err_hand.segment(3, 3) = -CustomMath::getPhi(_Rdot_hand, _Rdot_des_hand);
-  
+
   // force = k_gains_ * x_err_hand + d_gains_ * xdot_err_hand;
   force = _xk_gains.cwiseProduct(x_err_hand) + _xd_gains.cwiseProduct(xdot_err_hand);
 

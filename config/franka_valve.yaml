@@ -101,7 +101,51 @@ heuristic_motion_controller:
         - 40.0
     coriolis_factor: 1.0
     
+
+vision_controller:
+    type: franka_valve/VisionController
+    arm_id: $(arg arm_id)
+    joint_names:
+        - $(arg arm_id)_joint1
+        - $(arg arm_id)_joint2
+        - $(arg arm_id)_joint3
+        - $(arg arm_id)_joint4
+        - $(arg arm_id)_joint5
+        - $(arg arm_id)_joint6
+        - $(arg arm_id)_joint7
+    k_gains:
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+        - 400.0
+    d_gains:
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+    xk_gains:
+        - 400.0
+        - 400.0
+        - 400.0
+        - 450.0
+        - 450.0
+        - 450.0
+    xd_gains:
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+        - 40.0
+    coriolis_factor: 1.0
     
+
 rl_controller:
     type: franka_valve/RLController
     arm_id: $(arg arm_id)
@@ -218,17 +262,17 @@ trained_controller:
         - 40.0
         - 40.0
     xk_gains:
-        - 400.0
-        - 400.0
-        - 400.0
-        - 450.0
-        - 450.0
-        - 450.0
+        - 100.0
+        - 100.0
+        - 100.0
+        - 100.0
+        - 100.0
+        - 100.0
     xd_gains:
-        - 40.0
-        - 40.0
-        - 40.0
-        - 40.0
-        - 40.0
-        - 40.0
+        - 10.0
+        - 10.0
+        - 10.0
+        - 10.0
+        - 10.0
+        - 10.0
     coriolis_factor: 1.0

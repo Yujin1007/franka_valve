@@ -24,6 +24,7 @@
 #include <franka_gripper/GraspAction.h>
 #include <franka_gripper/HomingAction.h>
 #include <franka_gripper/MoveAction.h>
+#include <franka_gripper/StopAction.h>
 #include <franka_gripper/franka_gripper.h>
 
 #include <std_msgs/Bool.h>
@@ -47,6 +48,7 @@ class HeuristicMotionController : public controller_interface::MultiInterfaceCon
 
   void gripperCloseCallback(const std_msgs::Bool& msg);
   void gripperOpenCallback(const std_msgs::Bool& msg);
+  void gripperStopCallback(const std_msgs::Bool& msg);
 
  private:
   struct Target {
@@ -56,7 +58,8 @@ class HeuristicMotionController : public controller_interface::MultiInterfaceCon
     double roll;
     double pitch;
     double yaw;
-    bool gripper;
+    int gripper;
+    double gripper_width;
     double time;
     string state;
     array<double, 7> q_goal;
@@ -90,6 +93,7 @@ class HeuristicMotionController : public controller_interface::MultiInterfaceCon
   Target TargetTransformMatrix(Objects obj, Robot robot, double angle);
   Matrix3d R3D(Objects obj, Vector3d unitVec, double angle);
   void writeToCSVfile(string filename, MatrixXd qd, MatrixXd q, MatrixXd xd, MatrixXd x);
+  void writeToCSVfile(string filename, MatrixXd input_matrix, int cnt);
 
   static constexpr double kDeltaTauMax{1.0};
 
@@ -105,21 +109,33 @@ class HeuristicMotionController : public controller_interface::MultiInterfaceCon
   VectorXd _k_gains, _d_gains;
   VectorXd _xk_gains, _xd_gains;
 
+  // franka_gripper::GraspGoal close_goal;
+
   franka_gripper::GraspGoal close_goal;
+  
   franka_gripper::MoveGoal open_goal;
+  franka_gripper::StopGoal stop_goal;
   franka_gripper::GraspEpsilon epsilon;
 
   bool gripper_close;
   bool gripper_open;
+  bool gripper_stop;
+  bool gripper_home;
 
   ros::Subscriber gripper_close_sub_;
   ros::Subscriber gripper_open_sub_;
+  ros::Subscriber gripper_stop_sub;
+  ros::Subscriber gripper_home_sub;
+  
 
   actionlib::SimpleActionClient<franka_gripper::GraspAction> gripper_ac_close{
       "/franka_gripper/grasp", true};
   actionlib::SimpleActionClient<franka_gripper::MoveAction> gripper_ac_open{"/franka_gripper/move",
                                                                             true};
 
+  actionlib::SimpleActionClient<franka_gripper::StopAction> gripper_ac_stop{"/franka_gripper/stop",
+                                                                            true};
+                                                                          
   CTrajectory JointTrajectory;  // joint space trajectory
   HTrajectory HandTrajectory;   // task space trajectory
   RTrajectory CircularTrajectory;
@@ -138,12 +154,14 @@ class HeuristicMotionController : public controller_interface::MultiInterfaceCon
   Objects _obj;
   Robot _robot;
   MatrixXd _Tvr;
-
+  ros::Time _operation_time;
   float _printtime, _timeinterval, _t, _dt;
 
   bool _motion_done;
   MatrixXd _q_plot, _qdes_plot, _x_plot, _xdes_plot;
   int _cnt_plot;
+  int _cnt;
+  double _accum_time;
 };
 
 }  // namespace franka_valve

@@ -220,7 +220,8 @@ VectorXd Actor::Fc_layer2(VectorXd x)
 VectorXd Actor::Fc_layer3(VectorXd x)
 {
     Fc3_output = (_FcW3 * x) + _Fcb3;
-    output3 = (Fc3_output);
+    // output3 = (Fc3_output);
+    output3 = (Fc3_output).array().tanh();
 
     return output3;
 }
@@ -234,7 +235,7 @@ VectorXd Actor::Forward(VectorXd x)
 
 void Actor::Initialize()
 {
-    input_size = 139; // tau1,4 둘다 예측할 때
+    input_size = 97; //91; // tau1,4 둘다 예측할 때
     output_size = 6;
     hidden_units = 256;
 
@@ -256,12 +257,12 @@ void Actor::Initialize()
     Fc3_output.setZero(output_size);
     output3.setZero(output_size);
 
-    const char *FC1_weight = "/home/kist/torch_cpp/weight/FC1_weight.csv";
-    const char *FC2_weight = "/home/kist/torch_cpp/weight/FC2_weight.csv";
-    const char *FC3_weight = "/home/kist/torch_cpp/weight/FC3_weight.csv";
-    const char *FC1_bias = "/home/kist/torch_cpp/weight/FC1_bias.csv";
-    const char *FC2_bias = "/home/kist/torch_cpp/weight/FC2_bias.csv";
-    const char *FC3_bias = "/home/kist/torch_cpp/weight/FC3_bias.csv";
+    const char *FC1_weight = "/home/kist/catkin_ws/src/franka_ros/franka_valve/src/model_weight/actor/w1.csv";
+    const char *FC2_weight = "/home/kist/catkin_ws/src/franka_ros/franka_valve/src/model_weight/actor/w2.csv";
+    const char *FC3_weight = "/home/kist/catkin_ws/src/franka_ros/franka_valve/src/model_weight/actor/w3.csv";
+    const char *FC1_bias = "/home/kist/catkin_ws/src/franka_ros/franka_valve/src/model_weight/actor/b1.csv";
+    const char *FC2_bias = "/home/kist/catkin_ws/src/franka_ros/franka_valve/src/model_weight/actor/b2.csv";
+    const char *FC3_bias = "/home/kist/catkin_ws/src/franka_ros/franka_valve/src/model_weight/actor/b3.csv";
     setup_weight(FC1_weight, FC1_bias, FC2_weight, FC2_bias, FC3_weight, FC3_bias);
 
 }
